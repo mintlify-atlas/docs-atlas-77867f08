@@ -1,0 +1,128 @@
+---
+title: "Configure China and remote DNS servers in luci-app-mosdns"
+description: "Set China local DNS, remote DNS, bootstrap DNS, and streaming media servers using DoH, DoT, DoQ, and HTTP/3 with preset options and custom addresses."
+---
+
+MosDNS splits DNS resolution into two lanes: a **local lane** for domains known to be in mainland China (resolved via fast domestic servers) and a **remote lane** for everything else (resolved via encrypted foreign servers). You also configure a bootstrap DNS server, which MosDNS needs to look up the IP addresses of any DoH or DoT upstreams you specify. An optional streaming media lane lets you route Netflix, Disney+, and Hulu queries through a dedicated server to get geo-appropriate IP addresses.
+
+## DNS protocol formats
+
+All upstream addresses accept a URL-style format that specifies both the protocol and the server. Plain UDP (the traditional DNS wire format) is the implicit default when you enter a bare IP address.
+
+| Format | Protocol | Example |
+|---|---|---|
+| `1.2.3.4` | UDP (plain DNS, port 53) | `119.29.29.29` |
+| `udp://1.2.3.4` | UDP (explicit) | `udp://119.29.29.29` |
+| `tcp://1.2.3.4` | TCP | `tcp://119.29.29.29` |
+| `tls://1.2.3.4` | DNS over TLS (DoT, port 853) | `tls://8.8.8.8` |
+| `https://host/path` | DNS over HTTPS (DoH) | `https://doh.pub/dns-query` |
+| `h3://host/path` | DNS over HTTP/3 (DoH via QUIC) | `h3://dns.alidns.com/dns-query` |
+| `quic://1.2.3.4` | DNS over QUIC (DoQ) | `quic://dns.alidns.com` |
+
+<Note>
+The `h3://` scheme is converted to `https://` internally with the `enable_http3` flag set. HTTP/3 requires the QUIC Go library bundled with MosDNS v5.
+</Note>
+
+## China DNS server
+
+The China DNS server (UCI list `local_dns`) handles queries for domains in the `geosite_cn` set. When **Custom China DNS** is disabled, MosDNS automatically follows the DNS servers assigned to your WAN interface (pulled from the interface at runtime via `mosdns.uc interface_dns`). Enable Custom China DNS to specify servers manually.
+
+### Preset options
+
+| LuCI label | Address |
+|---|---|
+| Tencent Public DNS | `119.29.29.29` |
+| Tencent Public DNS | `119.28.28.28` |
+| Aliyun Public DNS | `223.5.5.5` |
+| Aliyun Public DNS | `223.6.6.6` |
+| TrafficRoute Public DNS | `180.184.1.1` |
+| TrafficRoute Public DNS | `180.184.2.2` |
+| Xinfeng Public DNS | `114.114.114.114` |
+| Xinfeng Public DNS | `114.114.115.115` |
+| Baidu Public DNS | `180.76.76.76` |
+| Tencent Public DNS (DNS over HTTPS) | `https://doh.pub/dns-query` |
+| Aliyun Public DNS (DNS over QUIC) | `quic://dns.alidns.com` |
+| Aliyun Public DNS (DNS over HTTPS) | `https://dns.alidns.com/dns-query` |
+| Aliyun Public DNS (DNS over HTTP/3) | `h3://dns.alidns.com/dns-query` |
+| 360 Public DNS (DNS over HTTPS) | `https://doh.360.cn/dns-query` |
+
+<Tip>
+Choosing a DoH or DoQ server for China DNS adds encryption at the cost of a small latency increase. For most home routers on a domestic ISP, plain UDP (`119.29.29.29`) gives the lowest latency.
+</Tip>
+
+### China DNS prefer IPv4
+
+When **China DNS prefer IPv4** is on, MosDNS inserts a `prefer_ipv4` step into the `query_is_local_domain` sequence. For dual-stack domains resolved through China DNS, the A record (IPv4) result is returned. This has no effect on IPv6-only destinations.
+
+## Remote DNS server
+
+The remote DNS server (UCI list `remote_dns`, default `tls://8.8.8.8`) handles queries that are not identified as Chinese domains, and also acts as the secondary in the fallback sequence. You can add multiple entries; MosDNS will query all of them concurrently up to the `concurrent` limit.
+
+### Preset options
+
+| LuCI label | Address |
+|---|---|
+| CloudFlare Public DNS | `tls://1.1.1.1` |
+| CloudFlare Public DNS | `tls://1.0.0.1` |
+| Google Public DNS | `tls://8.8.8.8` |
+| Google Public DNS | `tls://8.8.4.4` |
+| Quad9 Public DNS | `tls://9.9.9.9` |
+| Quad9 Public DNS | `tls://149.112.112.112` |
+| Cisco OpenDNS | `tls://208.67.222.222` |
+| Cisco OpenDNS | `tls://208.67.220.220` |
+
+<Note>
+Remote DNS servers use TLS by default in the presets. This prevents your ISP from seeing which domains you are querying. If you add a custom entry without a scheme, it falls back to plain UDP.
+</Note>
+
+### Remote DNS prefer IPv4
+
+When **Remote DNS prefer IPv4** is on, `prefer_ipv4` is inserted into the `forward_remote_upstream` sequence, causing remote and streaming media DNS results to prefer A records over AAAA records for dual-stack hosts.
+
+## Bootstrap DNS
+
+The bootstrap DNS server (UCI option `bootstrap_dns`, default `119.29.29.29`) resolves the hostnames in your DoH and DoT upstream URLs to IP addresses. MosDNS cannot use DoH or DoT until it knows the IP of the DoH/DoT server, which is a chicken-and-egg problem. The bootstrap server is always contacted over plain UDP, so you should set it to a fast and reliable address that does not require DNS-over-TLS to bootstrap itself.
+
+```text UCI example
+option bootstrap_dns '119.29.29.29'
+```
+
+<Warning>
+Do not use a DoH or DoT server as your bootstrap DNS — that creates a circular dependency. Use a plain UDP server like `119.29.29.29` or `223.5.5.5`.
+</Warning>
+
+## Streaming media DNS server
+
+When **Custom Stream Media DNS** is enabled (UCI option `custom_stream_media_dns`), queries matching domains in the streaming media set (Netflix, Disney+, Hulu, and entries in `/etc/mosdns/rule/streaming.txt`) are forwarded to the streaming media DNS server instead of the remote DNS server.
+
+> Netflix, Disney+, Hulu and streaming media rules list will use this DNS.
+
+The streaming media DNS server (UCI option `stream_media_dns`, default `tls://8.8.8.8`) accepts the same URL formats as the remote DNS server. You typically set this to a DNS server hosted in the country whose content library you want to access.
+
+### Preset streaming media DNS options
+
+| LuCI label | Address |
+|---|---|
+| CloudFlare Public DNS | `tls://1.1.1.1` |
+| Google Public DNS | `tls://8.8.8.8` |
+| Quad9 Public DNS | `tls://9.9.9.9` |
+| Cisco OpenDNS | `tls://208.67.222.222` |
+| Tencent Public DNS | `119.29.29.29` |
+| Tencent Public DNS | `119.28.28.28` |
+| Aliyun Public DNS | `223.5.5.5` |
+| Aliyun Public DNS | `223.6.6.6` |
+| Xinfeng Public DNS | `114.114.114.114` |
+| Xinfeng Public DNS | `114.114.115.115` |
+| Baidu Public DNS | `180.76.76.76` |
+
+<Info>
+The streaming media domain set is built from GeoSite data (`/var/mosdns/geosite_disney.txt`, `/var/mosdns/geosite_netflix.txt`, `/var/mosdns/geosite_hulu.txt`) plus any entries you add to `/etc/mosdns/rule/streaming.txt`.
+</Info>
+
+## Custom China DNS toggle
+
+| UCI option | LuCI label | Default |
+|---|---|---|
+| `custom_local_dns` | Custom China DNS | `0` |
+
+When `custom_local_dns` is `0`, the `forward_local` plugin is populated with the DNS servers assigned to the WAN interface at service start time. When set to `1`, you manually specify the servers via the **China DNS server** list in LuCI. This is useful if your WAN interface reports incorrect or missing DNS servers, or if you want to lock in specific servers regardless of DHCP assignment.

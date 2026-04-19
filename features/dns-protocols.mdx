@@ -1,0 +1,157 @@
+---
+title: "DNS protocol support in luci-app-mosdns"
+description: "Configure UDP, TCP, DoT, DoH, HTTP/3, and DoQ upstreams in luci-app-mosdns using simple URI-style format strings for local and remote DNS servers."
+---
+
+luci-app-mosdns supports every major DNS transport protocol, letting you point both your local (China) and remote (global) upstream resolvers at whatever server and protocol combination works best for your network. You enter each upstream as a plain address or URI string, and MosDNS handles the rest—including an automatic protocol translation for HTTP/3 upstreams.
+
+## Supported protocols
+
+The table below lists every protocol format you can use in the **China DNS server**, **Remote DNS server**, and **Streaming Media DNS server** fields.
+
+| Protocol | Example format | Default port |
+|---|---|---|
+| UDP (plain) | `119.29.29.29` | 53 |
+| UDP (explicit) | `udp://119.29.29.29:53` | 53 |
+| TCP | `tcp://119.29.29.29` | 53 |
+| TCP (explicit port) | `tcp://119.29.29.29:53` | 53 |
+| DNS-over-TLS (DoT) | `tls://120.53.53.53` | 853 |
+| DoT (explicit port) | `tls://120.53.53.53:853` | 853 |
+| DNS-over-HTTPS (DoH) | `https://120.53.53.53/dns-query` | 443 |
+| DNS-over-HTTPS HTTP/3 | `h3://dns.alidns.com/dns-query` | 443 |
+| DNS-over-QUIC (DoQ) | `quic://dns.alidns.com` | 853 |
+| DoQ (alternate prefix) | `doq://dns.alidns.com` | 853 |
+
+<Tip>
+You can mix protocols across your upstream list. For example, use `tls://120.53.53.53` as a primary and `119.29.29.29` as a plain-UDP fallback for the same resolver group.
+</Tip>
+
+## Protocol format examples
+
+<CodeGroup>
+
+```text UDP
+# Bare IP — defaults to UDP on port 53
+119.29.29.29
+
+# Explicit UDP URI
+udp://119.29.29.29:53
+```
+
+```text TCP
+tcp://119.29.29.29
+tcp://119.29.29.29:53
+```
+
+```text DNS-over-TLS (DoT)
+tls://120.53.53.53
+tls://120.53.53.53:853
+```
+
+```text DNS-over-HTTPS (DoH)
+https://120.53.53.53/dns-query
+```
+
+```text DNS-over-HTTPS HTTP/3
+h3://dns.alidns.com/dns-query
+```
+
+```text DNS-over-QUIC (DoQ)
+quic://dns.alidns.com
+doq://dns.alidns.com
+```
+
+</CodeGroup>
+
+## HTTP/3 protocol conversion
+
+When you specify an upstream using the `h3://` scheme, the init script automatically rewrites it to `https://` and enables the `enable_http3` flag on that upstream before passing the configuration to MosDNS. This means MosDNS itself never sees the `h3://` prefix—you get a standard DoH address with HTTP/3 transport enabled underneath.
+
+```shell
+# What you write in LuCI:
+h3://dns.alidns.com/dns-query
+
+# What the init script generates for MosDNS:
+addr: "https://dns.alidns.com/dns-query"
+enable_http3: true
+```
+
+This conversion happens identically for all three upstream groups: local DNS, remote DNS, and streaming media DNS.
+
+## Connection options
+
+Every upstream resolver accepts the following connection-level settings. You configure them once in **Basic Options → Advanced Options**, and they apply to all upstream groups.
+
+### Bootstrap DNS
+
+DoH and DoT upstreams are specified by hostname (e.g., `dns.alidns.com`). MosDNS needs to resolve that hostname to an IP before it can open a TLS connection—it cannot use its own pipeline to do so. The **Bootstrap DNS** setting provides a plain UDP resolver used only for this purpose.
+
+```text
+Default: 119.29.29.29
+```
+
+<Info>
+Bootstrap DNS is only used during startup to resolve DoH/DoT upstream hostnames. Normal DNS queries are never forwarded through it.
+</Info>
+
+### TCP/DoT pipelining (`enable_pipeline`)
+
+Enables RFC 7766 query pipelining over TCP and DoT connections. Pipelining allows MosDNS to send multiple queries over a single connection without waiting for each response in turn, reducing latency under load.
+
+| Value | Behavior |
+|---|---|
+| `0` | Disabled — one query per connection (or sequential) |
+| `1` (default) | Enabled — RFC 7766 pipelining active |
+
+### Idle timeout (`idle_timeout`)
+
+Sets how long, in seconds, an idle TCP, DoT, or DoH connection is kept open for reuse before it is closed. Keeping connections alive amortises the TLS handshake cost across multiple queries.
+
+```text
+Default: 30 seconds
+```
+
+### Concurrent (`concurrent`)
+
+Controls how many upstream servers receive the same query simultaneously. When `concurrent` is greater than 1, MosDNS sends the query to that many upstreams at once and uses the first response that arrives.
+
+```text
+Default: 2
+```
+
+<Warning>
+Setting `concurrent` to a high value increases upstream DNS server load. Use it when you need lowest-latency responses and your chosen upstreams can handle the extra traffic.
+</Warning>
+
+### Insecure skip verify (`insecure_skip_verify`)
+
+Disables TLS certificate validation for DoT and DoH upstreams. This can be useful when your system CA certificate store is outdated or your system clock is incorrect, both of which would cause TLS verification to fail.
+
+```text
+Default: 0 (verification enabled)
+```
+
+<Warning>
+Disabling TLS certificate validation removes a key security control. Only enable this option for troubleshooting, and re-enable it as soon as the underlying certificate or clock issue is resolved.
+</Warning>
+
+## Full upstream configuration example
+
+The following shows how these options appear in the generated MosDNS JSON configuration (from `config_custom.yaml` syntax for reference):
+
+```yaml
+- tag: forward_remote
+  type: forward
+  args:
+    concurrent: 2
+    upstreams:
+      - addr: "https://dns.google/dns-query"
+        bootstrap: "119.29.29.29"
+        enable_pipeline: true
+        idle_timeout: 30
+        insecure_skip_verify: false
+      - addr: "tls://8.8.8.8"
+        bootstrap: "119.29.29.29"
+        enable_pipeline: true
+        idle_timeout: 30
+```

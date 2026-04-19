@@ -1,0 +1,109 @@
+---
+title: 'View and manage MosDNS logs on OpenWrt'
+description: 'Access MosDNS logs through the LuCI web interface, configure log level and file path, follow logs in real time over SSH, and clear log output.'
+---
+
+MosDNS writes diagnostic output to a log file you can read from the LuCI **Logs** tab or directly over SSH. Configuring the right log level helps you see exactly what the service is doing without flooding the file with unnecessary detail.
+
+## Log configuration
+
+You control logging through two UCI options under **Basic Setting** in LuCI.
+
+| Option | UCI key | Default |
+|---|---|---|
+| Log level | `log_level` | `info` |
+| Log file path | `log_file` | `/var/log/mosdns.log` |
+
+### Log levels
+
+MosDNS supports four log levels. Each level includes all messages from the levels above it.
+
+| Level | What you see |
+|---|---|
+| `debug` | Every internal decision — query routing, cache hits, upstream selection. Most verbose. |
+| `info` | Service start/stop events and general operational messages. Default. |
+| `warning` | Non-fatal problems MosDNS recovered from automatically. |
+| `error` | Failures that prevented a query from being answered. Least verbose. |
+
+<Tip>
+Use `debug` temporarily when diagnosing a routing or resolution problem. Switch back to `info` once you have collected enough information — debug output is verbose and fills `/var/log/mosdns.log` quickly.
+</Tip>
+
+To change the log level, open **Services → MosDNS → Basic Setting**, set **Log Level**, and click **Save & Apply**.
+
+You can also set it directly with UCI:
+
+```shell
+uci set mosdns.config.log_level='debug'
+uci commit mosdns
+/etc/init.d/mosdns restart
+```
+
+## Viewing logs in LuCI
+
+The **Logs** tab in LuCI shows the contents of `/var/log/mosdns.log` and refreshes automatically every few seconds so you can watch activity in near real time.
+
+<Steps>
+  <Step title="Open the Logs tab">
+    In LuCI, go to **Services → MosDNS** and click the **Logs** tab.
+  </Step>
+  <Step title="Read the log output">
+    The log panel displays the current contents of `/var/log/mosdns.log`. The page refreshes on a fixed interval — you will see a note such as "Refresh every 5 seconds."
+  </Step>
+  <Step title="Clear the log">
+    Click **Clear logs** to truncate the log file. The panel resets to empty and new entries appear as MosDNS processes queries.
+  </Step>
+</Steps>
+
+<Note>
+If the log panel shows "No log data." the log file is empty or has not been created yet. Confirm MosDNS is running and that `log_file` points to a writable path.
+</Note>
+
+## Viewing logs over SSH
+
+You can read the log file directly from the shell.
+
+<CodeGroup>
+
+```shell Print the full log
+cat /var/log/mosdns.log
+```
+
+```shell Follow new entries in real time
+tail -f /var/log/mosdns.log
+```
+
+</CodeGroup>
+
+`tail -f` streams new lines as MosDNS writes them. Press `Ctrl+C` to stop.
+
+## Startup and procd logs
+
+The init script runs MosDNS under procd with stdout and stderr forwarded to the procd log:
+
+```shell
+procd_set_param stdout 1
+procd_set_param stderr 1
+```
+
+This means messages written during startup — before the log file is open — are captured by procd. To view them, run:
+
+```shell
+logread | grep mosdns
+```
+
+Startup failures, missing config file errors, and plugin load problems will appear here rather than in `/var/log/mosdns.log`.
+
+## Log file persistence
+
+<Warning>
+`/var/log/` is a tmpfs mount backed by RAM. The log file is lost on every reboot or when you restart MosDNS. If you need logs to survive reboots, change `log_file` to a path on persistent storage such as `/etc/mosdns/mosdns.log`.
+</Warning>
+
+The log file also resets each time MosDNS starts because the init script removes old temporary log files under `/tmp/log/mosdns*` before launching the process.
+
+To check the current log file path:
+
+```shell
+uci get mosdns.config.log_file
+```

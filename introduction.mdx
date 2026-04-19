@@ -1,0 +1,80 @@
+---
+title: "luci-app-mosdns: MosDNS for OpenWrt explained"
+description: "A LuCI web interface for MosDNS v5 on OpenWrt, providing geo-based DNS routing, modern protocol support, and domain filtering through a browser UI."
+---
+
+luci-app-mosdns packages [MosDNS v5](https://github.com/IrineSistiana/mosdns) — a plugin-based DNS forwarder — into an OpenWrt-compatible set of packages with a full LuCI web interface. Instead of editing YAML configuration files by hand, you configure DNS servers, routing rules, caching, and ad blocking directly from your router's browser UI.
+
+## What MosDNS does
+
+MosDNS is a programmable DNS forwarder designed around a pipeline of composable plugins. Each incoming DNS query passes through a sequence of plugins that inspect the query, match it against rule sets, check a cache, and forward it to the appropriate upstream resolver. The result is returned to the client.
+
+This architecture makes it straightforward to implement split-horizon DNS: send Chinese-region domain queries to fast local resolvers and route everything else to encrypted international upstreams — all on the same device.
+
+## What luci-app-mosdns adds
+
+MosDNS itself is configured through a YAML file. luci-app-mosdns wraps it with a LuCI application that generates and manages that configuration for you. You get a tabbed UI in the OpenWrt web interface covering basic settings, DNS server selection, caching, geo-routing, rule management, and geodata updates — without touching a terminal after initial installation.
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="rocket" href="/installation">
+    Install prebuilt packages on your router in one command. Supports 30+ CPU architectures and both `opkg` and `apk` package managers.
+  </Card>
+  <Card title="Build from source" icon="hammer" href="/building-from-source">
+    Compile luci-app-mosdns directly into your OpenWrt firmware image using the standard buildroot toolchain.
+  </Card>
+  <Card title="DNS protocols" icon="network-wired" href="/features/dns-protocols">
+    Forward queries over UDP, TCP, DoT, DoH, HTTP/3, or DoQ. Mix protocols across your local and remote upstream servers.
+  </Card>
+  <Card title="Geo-based routing" icon="earth-asia" href="/features/geo-routing">
+    Route CN domains to local resolvers and non-CN domains to encrypted upstreams using GeoSite and GeoIP databases.
+  </Card>
+  <Card title="Rules and filtering" icon="filter" href="/rules/overview">
+    Maintain whitelist, blocklist, greylist, hosts, redirect, and PTR-block lists through the built-in rule editor.
+  </Card>
+  <Card title="Ad blocking" icon="ban" href="/rules/ad-blocking">
+    Block ads using GeoSite category lists or custom domain sources, with automatic scheduled updates.
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+**Geo-based DNS routing** — Queries for domains in the CN GeoSite list are forwarded to local DNS resolvers. All other queries go to your configured remote (encrypted) servers. The routing decision uses Loyalsoldier's GeoSite and GeoIP databases, which you can update on a schedule.
+
+**Modern DNS protocol support** — You can configure upstream servers using any combination of plain UDP, TCP, DNS-over-TLS (DoT), DNS-over-HTTPS (DoH), DoH over HTTP/3, or DNS-over-QUIC (DoQ). Each protocol is selected by the URI scheme in the server address.
+
+**Lazy DNS cache** — MosDNS caches responses with a configurable maximum size and TTL overrides. A persistent cache dump survives reboots, so the cache is warm immediately after your router restarts.
+
+**DNS hijacking** — You can configure luci-app-mosdns to redirect all LAN DNS traffic to itself via nftables rules, ensuring every device on your network uses your configured resolvers without per-device configuration.
+
+**Custom rules** — The rule editor lets you manage multiple domain lists per category. Add domains to whitelist, blocklist, greylist, or DDNS lists. Import from remote URLs on a schedule. Use the hosts and redirect tabs for local overrides.
+
+**Streaming media routing** — Dedicated upstream support lets you route queries for Netflix, Disney+, Hulu, and similar services to a specific DNS server, ensuring correct geo-unblocking behavior.
+
+## Supported DNS protocols
+
+The table below shows the URI formats MosDNS accepts for each protocol. You enter these directly into the upstream server fields in the LuCI UI.
+
+| Protocol | Example format |
+|---|---|
+| UDP | `119.29.29.29` or `udp://119.29.29.29:53` |
+| TCP | `tcp://119.29.29.29` or `tcp://119.29.29.29:53` |
+| DNS-over-TLS | `tls://120.53.53.53` or `tls://120.53.53.53:853` |
+| DNS-over-HTTPS | `https://120.53.53.53/dns-query` |
+| DNS-over-HTTPS (HTTP/3) | `h3://dns.alidns.com/dns-query` |
+| DNS-over-QUIC | `quic://dns.alidns.com` or `doq://dns.alidns.com` |
+
+## Supported OpenWrt versions
+
+luci-app-mosdns v5 requires OpenWrt **21.02 or later** with LuCI installed. The prebuilt install script supports both the `opkg` package manager (OpenWrt 21.02 through 24.10) and the `apk` package manager (OpenWrt 25.12 and later).
+
+<Note>
+  The install script checks for the presence of `/usr/share/luci/menu.d` to verify LuCI compatibility. If your build does not include LuCI, the script will exit before installing anything.
+</Note>
+
+## Next step
+
+If you have an OpenWrt router running now, the fastest path is the prebuilt package installer — it downloads and installs everything in one command.
+
+<Card title="Install luci-app-mosdns" icon="rocket" href="/installation">
+  Install prebuilt packages via the one-line install script. No build environment required.
+</Card>

@@ -1,0 +1,121 @@
+---
+title: 'MosDNS HTTP API for cache management'
+description: 'Use the built-in MosDNS HTTP API to flush the DNS cache from LuCI or the command line, and control the service with the init script.'
+---
+
+MosDNS exposes a lightweight HTTP API that lets you flush the DNS cache without restarting the service. LuCI calls this API when you click **Flush DNS Cache**, and you can call it directly from the shell with `curl`.
+
+## API listen port
+
+The API binds to all interfaces on the port set by `listen_port_api`. The default is **9091**.
+
+| UCI key | Default | Description |
+|---|---|---|
+| `listen_port_api` | `9091` | Port the HTTP API listens on |
+
+The generated MosDNS configuration sets the API address to:
+
+```text
+0.0.0.0:{listen_port_api}
+```
+
+This means the API is reachable on every network interface the router has, including the loopback address `127.0.0.1`.
+
+To change the API port, go to **Services → MosDNS → Basic Setting → API Options**, update **API Listen port**, and click **Save & Apply**.
+
+You can also set it with UCI:
+
+```shell
+uci set mosdns.config.listen_port_api='9091'
+uci commit mosdns
+/etc/init.d/mosdns restart
+```
+
+## Flush DNS cache from LuCI
+
+The **Flush DNS Cache** button in LuCI calls the API and reports the result inline.
+
+<Steps>
+  <Step title="Open Basic Setting">
+    Go to **Services → MosDNS → Basic Setting** and scroll to the **API Options** section.
+  </Step>
+  <Step title="Click Flush DNS Cache">
+    Click the **Flush DNS Cache** button. LuCI sends a request to `http://127.0.0.1:{listen_port_api}/plugins/lazy_cache/flush`.
+  </Step>
+  <Step title="Read the result">
+    A status message appears:
+    - **"Flushing DNS Cache Success."** — the cache was cleared.
+    - **"Flushing DNS Cache Failed, Please check if MosDNS is running."** — MosDNS is not reachable. Verify the service is running and the API port matches.
+  </Step>
+</Steps>
+
+<Note>
+The Flush DNS Cache button is only available when cache is enabled (`cache=1` in UCI). If you have disabled the DNS cache, the lazy_cache plugin is not loaded and the API endpoint does not exist.
+</Note>
+
+## Flush DNS cache from the shell
+
+You can call the API endpoint directly with `curl`. Replace `9091` with your configured port if you changed it.
+
+```shell
+curl http://127.0.0.1:9091/plugins/lazy_cache/flush
+```
+
+A successful flush returns an HTTP 200 response. You can wrap this in a script or call it from a cron job to flush the cache on a schedule.
+
+<Tip>
+To flush the cache after updating your blocklist or rules without restarting the service, run the curl command above. Existing cached results are cleared immediately and MosDNS begins re-resolving queries.
+</Tip>
+
+## Service control with the init script
+
+Use the OpenWrt init script to manage the MosDNS service lifecycle from the shell.
+
+<CodeGroup>
+
+```shell Start
+/etc/init.d/mosdns start
+```
+
+```shell Stop
+/etc/init.d/mosdns stop
+```
+
+```shell Restart
+/etc/init.d/mosdns restart
+```
+
+```shell Reload
+/etc/init.d/mosdns reload
+```
+
+</CodeGroup>
+
+`reload` stops and starts the service sequentially (with a one-second pause), which regenerates the configuration from the current UCI settings.
+
+### Enable or disable on boot
+
+```shell
+# Enable MosDNS to start automatically at boot
+/etc/init.d/mosdns enable
+
+# Disable autostart
+/etc/init.d/mosdns disable
+```
+
+### Check service status
+
+```shell
+/etc/init.d/mosdns status
+```
+
+This returns `running` when the MosDNS process is active, or `stopped` when it is not.
+
+<CardGroup cols={2}>
+  <Card title="View logs" icon="file-text" href="/operations/logs">
+    Read the log file to diagnose startup errors or trace query routing decisions.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and diagnostic commands for MosDNS on OpenWrt.
+  </Card>
+</CardGroup>

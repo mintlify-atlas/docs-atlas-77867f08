@@ -1,0 +1,127 @@
+---
+title: "Enable ad blocking with MosDNS on OpenWrt"
+description: "Block ads at the DNS level using GeoSite category lists or custom remote domain sources, with GitHub proxy support and automatic scheduled updates."
+---
+
+luci-app-mosdns includes a built-in DNS ad blocker that works by matching queried domain names against a block list and returning `reject 3` (NXDOMAIN) for any match. Because the blocking happens at the DNS layer, it applies to every device on your LAN without installing a browser extension or configuring a proxy. You enable and configure it in **Services → MosDNS → Basic Setting** under the **Advanced Options** tab.
+
+## Enabling ad blocking
+
+<Steps>
+  <Step title="Open Basic Setting">
+    In LuCI, navigate to **Services → MosDNS → Basic Setting** and click the **Advanced Options** tab.
+  </Step>
+  <Step title="Toggle Enable DNS ADblock">
+    Switch **Enable DNS ADblock** to on.
+  </Step>
+  <Step title="Choose an ADblock source">
+    Select a source in the **ADblock Source** field (see options below) and click **Save & Apply**.
+  </Step>
+</Steps>
+
+MosDNS restarts automatically after saving. Matched ad domains immediately begin receiving NXDOMAIN responses from that point forward.
+
+## ADblock source options
+
+The **ADblock Source** field accepts three kinds of values. You can enter multiple sources, one per line.
+
+### GeoSite built-in list
+
+```text
+geosite.dat
+```
+
+Selecting `geosite.dat` tells MosDNS to use the `category-ads-all` category from the local GeoSite database file (`/var/mosdns/geosite_category-ads-all.txt`). This list is bundled with the GeoSite database and updated automatically when you run a geodata update. It requires no external download at startup.
+
+### Remote URL
+
+```text
+https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt
+```
+
+Any HTTPS URL pointing to a plain domain list is downloaded and stored in `/etc/mosdns/rule/adlist/` on first use. MosDNS checks whether the URL has changed since the last download — if a new URL is added, it downloads the file automatically on the next startup (after a 3-second delay).
+
+<Warning>
+  Remote sources must be **domain lists compatible with MosDNS**. Plain line-separated domain names are supported. IP address lists, hosts-format files (`127.0.0.1 ads.example.com`), and ABP-format filter lists are not compatible and will cause MosDNS to fail loading the rule set.
+</Warning>
+
+### Local file
+
+```text
+file:///var/mosdns/my-adlist.txt
+file:///etc/mosdns/rule/custom-ads.txt
+```
+
+Prefix a path with `file:///` to load a local file directly. The file must follow the same domain list format as remote sources. Local file sources are never downloaded — MosDNS reads them from disk at startup.
+
+## Rule format
+
+Ad block source files must be plain domain lists. Each line is one domain entry in standard MosDNS matching syntax:
+
+```text
+# Plain suffix match — blocks "ads.example.com" and all subdomains
+ads.example.com
+
+# Exact match only
+full:tracker.example.net
+
+# Keyword match — blocks any domain containing "doubleclick"
+keyword:doubleclick
+
+# Regex
+regexp:^ad[0-9]+\.example\.com$
+```
+
+## GitHub proxy for downloads
+
+If your router has limited or rate-capped access to GitHub, you can route ad list downloads through a GitHub proxy. Set the **GitHub Proxy** field in **Geodata Update** to a proxy base URL:
+
+```text
+https://gh-proxy.com
+```
+
+The proxy prefix is prepended to any `raw.githubusercontent.com` or `github.com` download URL. Leave the field blank to download directly.
+
+## How ad blocking integrates with the pipeline
+
+Internally, MosDNS loads all configured ad list files into a `domain_set` plugin tagged `adlist`. During query processing, the `$query_is_reject_domain` sequence checks both `blocklist` and `adlist`:
+
+```text
+query_is_reject_domain sequence
+────────────────────────────────────────────────
+  if qname matches $blocklist  → reject 3
+  if qname matches $adlist     → reject 3
+  if qtype=PTR and qname matches $local_ptr → reject 3
+────────────────────────────────────────────────
+```
+
+This means ad-blocked domains are treated identically to manually blocked domains — both return NXDOMAIN. The ad list check does not bypass the whitelist: if a domain appears in both your white list and an ad list source, the white list wins (it is evaluated earlier in the pipeline).
+
+## Automatic updates
+
+Ad lists sourced from remote URLs are refreshed by the same **Geodata Update** scheduler that updates GeoIP and GeoSite databases. To enable automatic updates:
+
+<Steps>
+  <Step title="Open Geodata Update">
+    Navigate to **Services → MosDNS → Geodata Update**.
+  </Step>
+  <Step title="Enable Auto Database Update">
+    Toggle **Enable Auto Database Update** to on.
+  </Step>
+  <Step title="Set a schedule">
+    Choose an **Update Cycle** (daily or a specific weekday) and an **Update Time** (hour of day, 0–23). A daily update at 02:00 is a reasonable default.
+  </Step>
+  <Step title="Save">
+    Click **Save & Apply**. The scheduler writes a cron entry to `/etc/crontabs/root` and calls `mosdns.uc update` at the configured time.
+  </Step>
+</Steps>
+
+The update script downloads fresh copies of all remote ad list URLs, updates GeoIP and GeoSite databases, and restarts MosDNS. A lock file at `/var/lock/mosdns_ad_update.lock` prevents concurrent update runs — if an update is already in progress when the cron fires, the new run exits immediately.
+
+<Info>
+  The `geosite.dat` source does not require a separate download step. It is refreshed as part of the regular GeoSite database update. Only remote URL and local file sources need attention if you manage their content yourself.
+</Info>
+
+## Disabling ad blocking
+
+To turn off ad blocking, return to **Services → MosDNS → Basic Setting → Advanced Options**, toggle **Enable DNS ADblock** off, and click **Save & Apply**. MosDNS restarts and the `adlist` domain set is populated with a stub empty file (`/var/mosdns/disable-ads.txt`) so the pipeline continues to function correctly.

@@ -1,0 +1,240 @@
+---
+title: "Use a custom MosDNS YAML configuration file on OpenWrt"
+description: "Switch from the generated default config to a hand-crafted YAML file, use the LuCI config editor, and learn the MosDNS plugin-based architecture."
+---
+
+MosDNS v5 uses a plugin-based pipeline architecture defined entirely in YAML. By default, luci-app-mosdns generates a JSON config from your UCI settings and manages it for you. If the generated config does not cover your use case — for example, you need a non-standard routing rule, a different fallback strategy, or an upstream protocol that the UI does not expose — you can switch to a custom YAML file and take full control.
+
+## Switch to custom config mode
+
+<Steps>
+  <Step title="Open LuCI Basic Settings">
+    In the OpenWrt web interface, navigate to **Services → MosDNS → Basic Setting**.
+  </Step>
+  <Step title="Change the Config File setting">
+    Find the **Config File** dropdown and change it from **Default Config** to **Custom Config**. This sets the UCI option `configfile` to `/etc/mosdns/config_custom.yaml`.
+  </Step>
+  <Step title="Edit the YAML file">
+    Scroll down to the **Configuration Editor** section. The editor shows the current contents of `/etc/mosdns/config_custom.yaml`. Make your changes directly in the editor.
+  </Step>
+  <Step title="Save and apply">
+    Click **Save & Apply**. The init script will start MosDNS with the `-c /etc/mosdns/config_custom.yaml` flag instead of the generated JSON file.
+  </Step>
+</Steps>
+
+<Warning>
+Rules you configure on the **Rules** tab (whitelist, blocklist, greylist, DDNS list, hosts, redirect, PTR block, streaming) only apply when MosDNS is running in **Default Config** mode. In Custom Config mode, only what you define in the YAML is active.
+</Warning>
+
+## The configuration editor
+
+The editor in LuCI reads and writes `/etc/mosdns/config_custom.yaml`. It accepts only valid YAML. If the file contains a syntax error, MosDNS will fail to start and log the parse error to `/var/log/mosdns.log`.
+
+You can also edit the file directly over SSH:
+
+```shell
+vi /etc/mosdns/config_custom.yaml
+/etc/init.d/mosdns reload
+```
+
+## Default custom config
+
+The following is the complete default content of `/etc/mosdns/config_custom.yaml` as shipped with luci-app-mosdns. It provides a minimal but functional split-DNS setup: Chinese domains go to local DNS, non-Chinese domains go to remote DNS, and a fallback sequence handles everything else.
+
+```yaml
+log:
+  level: info
+  file: "/var/log/mosdns.log"
+
+# API endpoint
+api:
+  http: "0.0.0.0:9091"
+
+include: []
+
+plugins:
+  # Chinese domains
+  - tag: geosite_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_cn.txt"
+
+  # Chinese IPs
+  - tag: geoip_cn
+    type: ip_set
+    args:
+      files:
+        - "/var/mosdns/geoip_cn.txt"
+
+  # Non-Chinese domains
+  - tag: geosite_no_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_geolocation-!cn.txt"
+
+  # Cache
+  - tag: lazy_cache
+    type: cache
+    args:
+      size: 20000
+      lazy_cache_ttl: 86400
+      dump_file: "/etc/mosdns/cache.dump"
+      dump_interval: 600
+
+  # Forward to local (China) DNS
+  - tag: forward_local
+    type: forward
+    args:
+      upstreams:
+        - addr: "https://doh.pub/dns-query"
+          bootstrap: 180.76.76.76
+        - addr: 119.29.29.29
+
+  # Forward to remote (international) DNS
+  - tag: forward_remote
+    type: forward
+    args:
+      upstreams:
+        - addr: tls://8.8.8.8
+          enable_pipeline: false
+
+  # Local resolution sequence
+  - tag: local_sequence
+    type: sequence
+    args:
+      - exec: $forward_local
+
+  # Remote resolution sequence
+  - tag: remote_sequence
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: $forward_remote
+
+  # Short-circuit when a response is already available
+  - tag: has_resp_sequence
+    type: sequence
+    args:
+      - matches: has_resp
+        exec: accept
+
+  # Fallback primary: local DNS, drop if response IP is not Chinese
+  - tag: query_is_local_ip
+    type: sequence
+    args:
+      - exec: $local_sequence
+      - matches: "!resp_ip $geoip_cn"
+        exec: drop_resp
+
+  # Fallback secondary: always use remote DNS
+  - tag: query_is_remote
+    type: sequence
+    args:
+      - exec: $remote_sequence
+
+  # Fallback plugin: try local first, fall back to remote after 500ms
+  - tag: fallback
+    type: fallback
+    args:
+      primary: query_is_local_ip
+      secondary: query_is_remote
+      threshold: 500
+      always_standby: true
+
+  # Route Chinese domains to local DNS
+  - tag: query_is_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_cn
+        exec: $local_sequence
+
+  # Route non-Chinese domains to remote DNS
+  - tag: query_is_no_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_no_cn
+        exec: $remote_sequence
+
+  # Main pipeline: cache → local domain → non-local domain → fallback
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $lazy_cache
+      - exec: jump has_resp_sequence
+      - exec: $query_is_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_no_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $fallback
+
+  # UDP server
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+
+  # TCP server
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+```
+
+## Plugin architecture
+
+Every functional unit in a MosDNS config is a **plugin**. Plugins have a `tag` (a unique name used to reference them), a `type` (the plugin type), and `args` (type-specific configuration). Plugins must be defined before they are referenced.
+
+| Plugin type | Role |
+|---|---|
+| `domain_set` | Loads a list of domain names from one or more files. Used to match query names against GeoSite data or custom rule files. |
+| `ip_set` | Loads a list of IP ranges from one or more files. Used to match response IPs against GeoIP data. |
+| `cache` | DNS response cache with lazy (stale-while-revalidate) TTL extension and optional persistence to disk. |
+| `forward` | Sends DNS queries to one or more upstream servers. Supports concurrent queries and all DNS-over-* protocols. |
+| `sequence` | Executes a list of steps in order. Each step can match on query/response properties and execute another plugin or a built-in command. |
+| `fallback` | Runs a primary sequence and switches to a secondary sequence if the primary does not respond within the threshold. |
+| `udp_server` | Listens for DNS queries on a UDP port and feeds them into the named entry sequence. |
+| `tcp_server` | Listens for DNS queries on a TCP port and feeds them into the named entry sequence. |
+| `hosts` | Rewrites query responses based on a hosts file. |
+| `redirect` | Redirects queries for one domain to return records for another domain. |
+
+## GeoSite and GeoIP data files
+
+The custom config references flat text files in `/var/mosdns/` that are extracted from the binary GeoSite.dat and GeoIP.dat databases. These files are regenerated each time MosDNS starts.
+
+| File | Contents |
+|---|---|
+| `/var/mosdns/geosite_cn.txt` | Domains in the `cn` GeoSite category |
+| `/var/mosdns/geosite_geolocation-!cn.txt` | Domains tagged as non-Chinese |
+| `/var/mosdns/geosite_apple.txt` | Apple service domains |
+| `/var/mosdns/geosite_disney.txt` | Disney+ domains |
+| `/var/mosdns/geosite_netflix.txt` | Netflix domains |
+| `/var/mosdns/geosite_hulu.txt` | Hulu domains |
+| `/var/mosdns/geoip_cn.txt` | Chinese IP ranges |
+
+You control which GeoSite and GeoIP categories are extracted via the **GeoSite Tags** and **GeoIP Tags** options on the **GeoData Export** tab in LuCI. All exported files land in `/var/mosdns/`.
+
+<Info>
+Files in `/var/mosdns/` are in RAM (tmpfs) and are regenerated on every boot. If you reference a file that has not been exported, MosDNS will fail to start. Check the **GeoData Export** tab to ensure the categories you use in your YAML are included in the export list.
+</Info>
+
+## GeoSite tags and GeoIP tags for custom config
+
+When you are in Custom Config mode, the **GeoSite Tags** and **GeoIP Tags** fields on the **GeoData Export** tab still work normally. Add the category names you need (for example `cn`, `geolocation-!cn`, `apple`, `netflix`) and MosDNS will export them to `/var/mosdns/` so your YAML can reference them.
+
+```yaml
+# Reference a custom-exported GeoSite category in your YAML
+- tag: my_custom_set
+  type: domain_set
+  args:
+    files:
+      - "/var/mosdns/geosite_netflix.txt"
+      - "/var/mosdns/geosite_disney.txt"
+```
+
+<Tip>
+Keep your custom config minimal and build from the default example. Adding too many sequences and fallback chains can make DNS behavior hard to reason about. Start with the default, change one thing at a time, and check `/var/log/mosdns.log` with `log_level: debug` to verify routing decisions.
+</Tip>

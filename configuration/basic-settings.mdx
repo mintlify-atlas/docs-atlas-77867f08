@@ -1,0 +1,86 @@
+---
+title: "Basic settings for luci-app-mosdns on OpenWrt routers"
+description: "Configure MosDNS enable/disable, listen port, config file mode, DNS forwarding to Dnsmasq, DNS hijacking via nftables, and log level settings."
+---
+
+The Basic Settings tab in LuCI is your starting point for getting MosDNS running. You choose whether to use the generated default config or a hand-crafted YAML file, configure where MosDNS listens, and decide how the rest of your router routes DNS traffic to it. Most users only need to touch a handful of these options to get a working setup.
+
+## Enable MosDNS
+
+Before anything works, you need to enable the service. Set **Enabled** to on and save and apply. The init script reads `/etc/config/mosdns` via UCI, generates `/var/etc/mosdns.json` if you are in Default Config mode, then starts the `mosdns` binary under procd.
+
+<Warning>
+MosDNS will not start until `enabled` is set to `1`. Saving other settings without enabling the service has no effect.
+</Warning>
+
+## Config file mode
+
+The most important choice you make in Basic Settings is which config file mode to use.
+
+<CardGroup cols={2}>
+  <Card title="Default Config" icon="sliders">
+    MosDNS generates `/var/etc/mosdns.json` from UCI options every time the service starts. All settings in the LuCI UI (DNS servers, advanced options, rules) are active. This is the recommended mode for most users.
+  </Card>
+  <Card title="Custom Config" icon="file-code">
+    MosDNS reads `/etc/mosdns/config_custom.yaml` directly. You write and maintain the YAML yourself. LuCI rules (whitelist, blocklist, greylist, etc.) are ignored — only what you put in the YAML applies.
+  </Card>
+</CardGroup>
+
+The UCI option that controls this is `configfile`. When set to `/var/etc/mosdns.json` the service is in Default Config mode; any other path (typically `/etc/mosdns/config_custom.yaml`) switches to Custom Config mode.
+
+```text UCI key
+/etc/config/mosdns → option configfile
+```
+
+<Note>
+The **Configuration Editor** tab in LuCI only edits `/etc/mosdns/config_custom.yaml`. It has no effect while you are in Default Config mode.
+</Note>
+
+## Settings reference
+
+The table below covers every option visible in the Basic Options section of the LuCI page.
+
+| UCI option | LuCI label | Default | Description |
+|---|---|---|---|
+| `enabled` | Enabled | `0` | Set to `1` to start MosDNS at boot and via the UI toggle. |
+| `configfile` | Config File | `/var/etc/mosdns.json` | Path to the active config. Change to `/etc/mosdns/config_custom.yaml` to switch to Custom Config mode. |
+| `listen_port` | Listen Port | `5335` | UDP and TCP port MosDNS binds to for incoming DNS queries. |
+| `listen_address` | Listen Address | `0.0.0.0` | IP address MosDNS binds to. Use `0.0.0.0` to accept queries from any interface, or a specific IP to restrict access. |
+| `log_level` | Log Level | `info` | Verbosity of the MosDNS log. One of `debug`, `info`, `warning`, or `error`. |
+| `log_file` | Log File | `/var/log/mosdns.log` | Absolute path where log output is written. |
+| `redirect` | DNS Forward | `1` | Forward all Dnsmasq DNS resolution requests to MosDNS. Configures Dnsmasq `server=127.0.0.1#<port>` automatically. |
+| `local_dns_redirect` | DNS redirect | `0` | Force-redirect all local DNS queries to MosDNS using an nftables NAT rule (DNS hijacking). Intercepts UDP port 53 traffic on the prerouting chain. |
+
+## DNS forwarding vs. DNS hijacking
+
+These two options control how DNS traffic reaches MosDNS and are independent of each other.
+
+**DNS Forward (`redirect`)** reconfigures Dnsmasq so that it stops using its own upstream servers and instead sends every query to `127.0.0.1#<listen_port>`. This is the clean, cooperative approach: Dnsmasq still handles DHCP and local hostname resolution, but offloads recursive DNS to MosDNS. When you enable this option, the init script automatically sets `noresolv=1`, clears the Dnsmasq cache, and commits the dhcp UCI config.
+
+**DNS Hijacking (`local_dns_redirect`)** goes further by adding an nftables rule that intercepts any UDP packet to port 53 — regardless of which program on which device sent it — and redirects it to MosDNS's listen port. This catches DNS queries from clients that bypass Dnsmasq and speak directly to `8.8.8.8:53` or similar. It only works on routers running fw4 (nftables-based firewall, OpenWrt 22.03+).
+
+<Tip>
+For most deployments, enabling **DNS Forward** is sufficient. Add **DNS Hijacking** only if you have clients or applications that hard-code a public DNS IP.
+</Tip>
+
+## Log levels
+
+| Value | When to use |
+|---|---|
+| `debug` | Verbose per-query output. Useful when tracing why a specific domain resolves incorrectly. Generates high log volume on busy routers. |
+| `info` | Default. Logs service start/stop and notable events. |
+| `warning` | Logs only recoverable error conditions. |
+| `error` | Logs only fatal errors. Minimal output on a healthy system. |
+
+## Applying changes
+
+Changes made in LuCI take effect only after you click **Save & Apply**. The init script calls `stop` followed by `start`, regenerating the JSON config from UCI values before restarting the process.
+
+```shell
+# Manually reload from the command line
+/etc/init.d/mosdns reload
+```
+
+<Info>
+Log files are cleared from `/tmp/log/mosdns*` on each service start. The persistent log is written to the path you set in `log_file`.
+</Info>

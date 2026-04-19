@@ -1,0 +1,149 @@
+---
+title: "Build luci-app-mosdns from source"
+description: "Compile luci-app-mosdns into your OpenWrt firmware image using the standard buildroot toolchain, for full control over package versions and features."
+---
+
+Building luci-app-mosdns from source lets you include it directly in a custom OpenWrt firmware image, rather than installing it after flashing. This is the right approach if you want to bake the package into a squashfs image, pin specific versions, or build for a device not covered by the prebuilt archives. You need a working OpenWrt buildroot environment on a Linux host.
+
+## Prerequisites
+
+Before you clone the package sources, make sure your build environment meets these requirements:
+
+- **golang 1.24.x** or the latest version — MosDNS is written in Go, and the build system requires a recent toolchain. You will replace the bundled golang feed with a newer one in the steps below.
+- **OpenWrt buildroot** — a cloned and bootstrapped OpenWrt source tree with feeds updated. Follow the [OpenWrt build system setup guide](https://openwrt.org/docs/guide-developer/toolchain/install-buildsystem) if you do not have one.
+- **Disk space** — a full OpenWrt build requires several gigabytes of free space for sources, toolchain, and build output.
+
+## Build for official OpenWrt snapshots
+
+Use this path if you are building from the official OpenWrt source tree (the `main` branch or a tagged release such as 24.10).
+
+<Steps>
+  <Step title="Enter your OpenWrt source directory">
+    All commands below run from the root of your OpenWrt source tree.
+
+    ```shell
+    cd /path/to/openwrt
+    ```
+  </Step>
+
+  <Step title="Replace the golang feed with version 1.24.x">
+    The golang version bundled in the OpenWrt packages feed may be older than 1.24. Replace it before building:
+
+    ```shell
+    rm -rf feeds/packages/lang/golang
+    git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+    ```
+  </Step>
+
+  <Step title="Clone the package sources">
+    Remove the bundled v2ray-geodata package (present in openwrt-22.03 and master) and clone both luci-app-mosdns and the geodata packages into your build tree:
+
+    ```shell
+    rm -rf feeds/packages/net/v2ray-geodata
+
+    git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
+    git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
+    ```
+  </Step>
+
+  <Step title="Select the package in menuconfig">
+    Run `menuconfig` and navigate to **LUCI → Applications → luci-app-mosdns** to select it for inclusion:
+
+    ```shell
+    make menuconfig
+    ```
+
+    Mark `luci-app-mosdns` with `<*>` to build it into the firmware image, or `<M>` to build it as a standalone `.ipk` package.
+  </Step>
+
+  <Step title="Compile the package">
+    Build only the luci-app-mosdns package (and its dependencies) without triggering a full firmware build:
+
+    ```shell
+    make package/mosdns/luci-app-mosdns/compile V=s
+    ```
+
+    The `-V=s` flag enables verbose output so you can see each build step and catch errors early. Built packages appear under `bin/packages/$ARCH/`.
+  </Step>
+</Steps>
+
+## Build for non-official OpenWrt sources
+
+Use this path if you are building from a third-party OpenWrt fork or a custom source tree that may already bundle its own versions of mosdns or v2ray-geodata.
+
+<Steps>
+  <Step title="Remove conflicting package definitions">
+    Third-party sources often ship their own mosdns and v2ray-geodata Makefiles. Remove them to avoid conflicts with the packages you are about to clone:
+
+    ```shell
+    find ./ | grep Makefile | grep v2ray-geodata | xargs rm -f
+    find ./ | grep Makefile | grep mosdns | xargs rm -f
+    ```
+  </Step>
+
+  <Step title="Clone the package sources">
+    Clone luci-app-mosdns and v2ray-geodata into the `package/` directory:
+
+    ```shell
+    git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
+    git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
+    ```
+  </Step>
+
+  <Step title="Select the package in menuconfig">
+    Run `menuconfig` and navigate to **LUCI → Applications → luci-app-mosdns** to enable it:
+
+    ```shell
+    make menuconfig
+    ```
+  </Step>
+
+  <Step title="Compile the package">
+    ```shell
+    make package/mosdns/luci-app-mosdns/compile V=s
+    ```
+  </Step>
+</Steps>
+
+## Package dependencies
+
+The `luci-app-mosdns` Makefile declares the following runtime dependencies. The build system resolves and builds these automatically when you compile `luci-app-mosdns`:
+
+| Dependency | Purpose |
+|---|---|
+| `mosdns` | The MosDNS v5 daemon binary |
+| `curl` | Used by the geodata update feature to fetch remote rule files |
+| `v2ray-geoip` | GeoIP database for IP-based routing |
+| `v2ray-geosite` | GeoSite database for domain-based routing |
+| `v2dat` | v2ray geo data file parser |
+
+<Note>
+  `v2ray-geoip` and `v2ray-geosite` come from the `v2ray-geodata` repository you cloned in the steps above, not from the default OpenWrt packages feed. This is why the conflicting feed entry must be removed beforehand.
+</Note>
+
+## Finding the built packages
+
+After a successful compile, `.ipk` (opkg) or `.apk` packages are written to:
+
+```
+bin/packages/<arch>/base/
+```
+
+You can install them manually on a running router with `opkg install` or `apk add --allow-untrusted`, or include them in a full firmware image by building with `make` instead of `make package/...`.
+
+<Tip>
+  To build a complete firmware image with luci-app-mosdns included, run a full `make` after selecting the package in menuconfig. The package will be embedded in the squashfs overlay, meaning it survives a factory reset.
+</Tip>
+
+## Configuration files
+
+The build installs the following persistent configuration paths, declared in the Makefile's `conffiles` section:
+
+| Path | Purpose |
+|---|---|
+| `/etc/config/mosdns` | UCI configuration (managed by LuCI) |
+| `/etc/mosdns/cache.dump` | Persistent DNS cache across reboots |
+| `/etc/mosdns/config_custom.yaml` | Optional hand-edited MosDNS YAML config |
+| `/etc/mosdns/rule/` | Directory for custom domain rule files |
+
+These paths are preserved across `opkg upgrade` operations and are not removed on package removal unless you explicitly delete them.

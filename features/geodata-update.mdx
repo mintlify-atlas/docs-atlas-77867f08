@@ -1,0 +1,157 @@
+---
+title: "Automatic GeoIP and GeoSite database updates"
+description: "Schedule automatic GeoIP and GeoSite database updates with SHA256 checksum verification, GitHub proxy support, and simultaneous ad-blocking rule refresh."
+---
+
+luci-app-mosdns can automatically download fresh GeoIP and GeoSite databases on a schedule you define. Each update fetches the latest files from Loyalsoldier's releases, verifies their SHA256 checksums before applying them, and restarts MosDNS so the new data takes effect. Ad-blocking rules are refreshed in the same operation.
+
+## Update settings overview
+
+You configure automatic updates on the **Geodata Update** page in LuCI. The settings map to a cron job written to `/etc/crontabs/root` when you save.
+
+<CardGroup cols={2}>
+  <Card title="Enable Auto Database Update" icon="clock">
+    Master toggle. When enabled, a cron entry is created. When disabled, the cron entry is removed.
+  </Card>
+  <Card title="Check And Update" icon="arrows-rotate">
+    Manual trigger button. Runs the update immediately, regardless of the schedule.
+  </Card>
+</CardGroup>
+
+## Schedule configuration
+
+### Update Cycle
+
+Choose how often the update runs. The options correspond directly to cron day-of-week values:
+
+| Option | Cron value |
+|---|---|
+| Every Day | `*` |
+| Every Monday | `1` |
+| Every Tuesday | `2` |
+| Every Wednesday | `3` |
+| Every Thursday | `4` |
+| Every Friday | `5` |
+| Every Saturday | `6` |
+| Every Sunday | `0` |
+
+### Update Time
+
+Set the hour of day (0–23) at which the update runs. The cron entry always fires at minute 0 of the chosen hour.
+
+```text
+Default: 2 (02:00 local time)
+```
+
+The resulting cron line written to `/etc/crontabs/root` looks like this:
+
+```text
+# Every day at 02:00
+0 2 * * * /usr/share/mosdns/mosdns.uc update
+
+# Every Monday at 03:00
+0 3 * * 1 /usr/share/mosdns/mosdns.uc update
+```
+
+<Tip>
+Schedule updates during off-peak hours. The process downloads files from GitHub (or a proxy), performs SHA256 verification, copies files into place, and restarts MosDNS — all of which briefly increases CPU and network load.
+</Tip>
+
+## GeoIP type
+
+You can choose between two GeoIP datasets depending on your needs:
+
+<CardGroup cols={2}>
+  <Card title="Little" icon="compress">
+    Downloads `geoip-only-cn-private.dat` — contains only Mainland China IP ranges and private/reserved address space. Smaller file, faster download, sufficient for the default routing configuration.
+  </Card>
+  <Card title="Full" icon="expand">
+    Downloads the full GeoIP dataset — contains all countries plus private IP ranges. Required if you use custom configurations that match on GeoIP categories other than `cn`.
+  </Card>
+</CardGroup>
+
+```text
+Default: Little (geoip-only-cn-private)
+```
+
+## GitHub Proxy
+
+GitHub release downloads can be slow or unreliable from within the Chinese mainland. The **GitHub Proxy** field lets you specify a mirror URL that is prepended to the GitHub download URLs.
+
+```text
+Example: https://gh-proxy.com
+```
+
+When a proxy is configured, download URLs become:
+
+```text
+# Without proxy
+https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip-only-cn-private.dat
+
+# With proxy (https://gh-proxy.com)
+https://gh-proxy.com/https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip-only-cn-private.dat
+```
+
+Leave the field blank to download directly from GitHub.
+
+## What gets updated
+
+Each update run downloads and verifies the following files:
+
+| File | Source project | Destination |
+|---|---|---|
+| `geoip.dat` | `Loyalsoldier/geoip` | `/usr/share/v2ray/geoip.dat` |
+| `geosite.dat` | `Loyalsoldier/v2ray-rules-dat` | `/usr/share/v2ray/geosite.dat` |
+| Ad-block rules | Configured ad-source URLs | `/etc/mosdns/rule/adlist/` |
+
+## SHA256 checksum verification
+
+Before any file is applied, the update script downloads the corresponding `.sha256sum` file from the same release and compares it against the downloaded file. If the checksums do not match, the update aborts and the existing files remain untouched.
+
+<Steps>
+  <Step title="Download checksum">
+    Fetch `geoip.dat.sha256sum` (and `geosite.dat.sha256sum`) from the release.
+  </Step>
+  <Step title="Compare with existing file">
+    Compute the SHA256 of the currently installed `.dat` file. If it matches the remote checksum, the file is already up to date and no download is needed.
+  </Step>
+  <Step title="Download updated file">
+    If the checksums differ, download the new `.dat` file to a temporary directory.
+  </Step>
+  <Step title="Verify downloaded file">
+    Compute the SHA256 of the downloaded file and compare it against the remote checksum. If they do not match, the update aborts and the temporary file is discarded.
+  </Step>
+  <Step title="Apply and restart">
+    Copy the verified file to `/usr/share/v2ray/`, then restart MosDNS so it extracts fresh `.txt` lists from the new `.dat` files via `v2dat`.
+  </Step>
+</Steps>
+
+```text
+# Example log output during a successful update
+Downloading https://github.com/Loyalsoldier/geoip/releases/latest/download/geoip-only-cn-private.dat.sha256sum
+geoip.dat is up to date.
+Downloading https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat.sha256sum
+Downloading https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
+```
+
+<Warning>
+If the update script cannot reach GitHub (or the configured proxy), it exits with a non-zero status and leaves the existing databases in place. Check your network connection and proxy URL if updates consistently fail.
+</Warning>
+
+## Ad-blocking rule updates
+
+Ad-blocking rule files from HTTP/HTTPS sources are downloaded in the same update run as GeoIP/GeoSite. Local files (`file://` paths) and `geosite.dat` category sources are skipped during network download because they are already available locally.
+
+After all files are downloaded successfully, they are moved into `/etc/mosdns/rule/adlist/` and MosDNS is restarted once to apply both the geo database changes and the updated ad rules simultaneously.
+
+## How updates trigger a MosDNS restart
+
+The `mosdns.uc update` action runs three operations in sequence:
+
+```text
+1. update_geodat()   — download and verify geoip.dat + geosite.dat
+2. update_adlist()   — download ad-blocking rule files
+3. /etc/init.d/mosdns restart — apply all changes
+```
+
+The restart causes MosDNS to re-run `v2dat_dump`, which extracts the updated `.dat` files into the `/var/mosdns/*.txt` lists that the routing pipeline reads. The DNS cache is also cleared on restart.

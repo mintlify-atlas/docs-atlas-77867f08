@@ -1,0 +1,155 @@
+---
+title: "Geo-based DNS routing for China and global"
+description: "Route CN domains to local DNS and non-CN domains to remote DNS using GeoSite and GeoIP databases, with a smart fallback that validates response IPs."
+---
+
+luci-app-mosdns splits DNS traffic by geography: queries for Chinese mainland domains go to your local (China) DNS server for accurate CDN results, while queries for international domains go to a remote DNS server over an encrypted protocol. The routing decision is made in a fixed sequence of rule checks, with GeoSite category matching and a GeoIP-validated fallback catching anything that the earlier rules do not resolve.
+
+## GeoSite and GeoIP databases
+
+The routing engine relies on two data files published by the [Loyalsoldier v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) project:
+
+<CardGroup cols={2}>
+  <Card title="geosite.dat" icon="globe">
+    Domain-name categorisation data. Contains lists such as `cn` (Chinese mainland domains), `geolocation-!cn` (non-CN domains), `apple`, `netflix`, `disney`, `hulu`, and `category-ads-all`.
+  </Card>
+  <Card title="geoip.dat" icon="map-pin">
+    IP address prefix data. The `cn` category covers all IP ranges allocated to the Chinese mainland, used to validate whether a DNS response came from a Chinese server.
+  </Card>
+</CardGroup>
+
+At startup, the `v2dat` tool extracts the relevant categories from these binary `.dat` files into plain `.txt` lists stored in `/var/mosdns/` (RAM):
+
+```text
+/var/mosdns/geosite_cn.txt
+/var/mosdns/geosite_geolocation-!cn.txt
+/var/mosdns/geosite_apple.txt
+/var/mosdns/geoip_cn.txt
+```
+
+## Main sequence routing pipeline
+
+Every DNS query passes through the `main_sequence` pipeline in strict order. The pipeline short-circuits as soon as a step produces a response—later steps are skipped.
+
+<Steps>
+  <Step title="Hosts lookup">
+    MosDNS checks `/etc/mosdns/rule/hosts.txt` for a static mapping. If a match is found the response is returned immediately with no upstream query.
+  </Step>
+  <Step title="Cache check">
+    If DNS caching is enabled, the cache is checked next (excluding DDNS, blocklist, adlist, and local-PTR domains, which are never cached). A cache hit returns the stored response.
+  </Step>
+  <Step title="Redirect rules">
+    The redirect plugin checks `/etc/mosdns/rule/redirect.txt`. A redirect rule returns the DNS records for a different domain in response to the original query.
+  </Step>
+  <Step title="Apple domain optimisation (optional)">
+    When **Apple domains optimization** is enabled, Apple domains that have Chinese mainland CDN nodes are resolved by a special fallback that prefers local DNS (returning a CN IP) but falls back to Xinfeng UDP (`114.114.114.114` / `114.114.115.115`) within 100 ms if needed.
+  </Step>
+  <Step title="DDNS domain lookup">
+    Domains listed in `/etc/mosdns/rule/ddnslist.txt` are sent directly to local DNS with a forced TTL of 5 seconds. Results are not cached.
+  </Step>
+  <Step title="Whitelist domains → local DNS">
+    Domains in `/etc/mosdns/rule/whitelist.txt` are always resolved by local DNS, bypassing all geo classification. Respects the **China DNS prefer IPv4** setting.
+  </Step>
+  <Step title="Reject blocked and ad domains">
+    Domains matching `/etc/mosdns/rule/blocklist.txt`, the ad-block list, or PTR queries for local-ptr domains receive a `REFUSED` response (RCODE 3). When **Disable RR Type 65** is on, HTTPS/SVCB record queries are also rejected here.
+  </Step>
+  <Step title="Greylist domains → remote DNS">
+    Domains in `/etc/mosdns/rule/greylist.txt` are always sent to remote DNS, bypassing local DNS regardless of GeoSite classification.
+  </Step>
+  <Step title="Streaming media domains → streaming DNS (optional)">
+    When **Custom Stream Media DNS** is enabled, domains matching the `netflix`, `disney`, `hulu`, and `/etc/mosdns/rule/streaming.txt` lists are resolved by the dedicated streaming DNS server.
+  </Step>
+  <Step title="GeoSite CN domains → local DNS">
+    Domains matching the `geosite_cn` category are resolved by local DNS. Respects the **China DNS prefer IPv4** setting.
+  </Step>
+  <Step title="GeoSite non-CN domains → remote DNS">
+    Domains matching the `geosite_no_cn` category (`geolocation-!cn`) are resolved by remote DNS, with the **Remote DNS prefer IPv4** and ECS settings applied if configured.
+  </Step>
+  <Step title="Fallback (remaining queries)">
+    Any query that reached this step is handled by the fallback mechanism described below.
+  </Step>
+</Steps>
+
+## Fallback mechanism
+
+The fallback handles domains not classified by GeoSite—newly registered domains, internal names, or anything missing from the database. It runs two resolvers in parallel with a 500 ms threshold:
+
+<Steps>
+  <Step title="Primary: query_is_non_local_ip">
+    The query is sent to local DNS. If the response IP is **not** in the `geoip_cn` set (i.e., the returned IP is not a Chinese mainland address), the response is dropped.
+  </Step>
+  <Step title="Secondary: forward_remote_upstream">
+    The query is simultaneously sent to remote DNS (always on standby). If the primary drops its response or does not answer within 500 ms, the secondary result is used.
+  </Step>
+</Steps>
+
+This design means that for an unclassified domain:
+
+- If local DNS returns a **Chinese IP** → that answer is used (CDN-friendly).
+- If local DNS returns a **non-Chinese IP** → the response is dropped and the remote DNS answer is used instead (correct resolution for international services).
+
+```yaml
+# Generated fallback plugin configuration
+- tag: fallback
+  type: fallback
+  args:
+    primary: query_is_non_local_ip   # local DNS + GeoIP check
+    secondary: forward_remote_upstream
+    threshold: 500                   # ms before secondary is preferred
+    always_standby: true
+```
+
+## Prevent DNS leaks (`dns_leak`)
+
+When **Prevent DNS Leaks** is enabled, the primary fallback sequence changes: instead of `query_is_non_local_ip`, the primary becomes `forward_remote_upstream` directly. This forces every unclassified domain to remote DNS without first trying local DNS.
+
+| `dns_leak` | Fallback primary |
+|---|---|
+| `0` (default) | `query_is_non_local_ip` — local DNS, drop if non-CN IP |
+| `1` | `forward_remote_upstream` — always use remote DNS |
+
+<Warning>
+Enabling **Prevent DNS Leaks** means all unclassified domains bypass local DNS entirely. This may break resolution of internal or private-network hostnames that only your ISP's DNS knows about.
+</Warning>
+
+## IPv4 preference settings
+
+Two separate IPv4 preference switches exist because local and remote upstreams serve different audiences:
+
+<CardGroup cols={2}>
+  <Card title="China DNS prefer IPv4" icon="flag">
+    Applies `prefer_ipv4` to whitelist and GeoSite CN queries. Has no effect when the destination is IPv6-only.
+  </Card>
+  <Card title="Remote DNS prefer IPv4" icon="globe">
+    Applies `prefer_ipv4` to greylist, GeoSite non-CN, streaming, and fallback remote queries.
+  </Card>
+</CardGroup>
+
+## Apple domain optimisation
+
+Apple operates CDN nodes inside the Chinese mainland for many of its domains. The optimisation feature uses a dedicated fallback (`apple_domain_fallback`) that tries local DNS first and, if the response IP is not in `geoip_cn`, falls back to Xinfeng UDP within 100 ms. This ensures Apple devices receive a mainland CDN IP rather than an international one.
+
+```yaml
+# Apple domain fallback — tighter 100 ms threshold
+- tag: apple_domain_fallback
+  type: fallback
+  args:
+    primary: query_is_non_local_ip
+    secondary: forward_xinfeng_udp   # 114.114.114.114 / 114.114.115.115
+    threshold: 100
+    always_standby: true
+```
+
+<Info>
+The Apple optimisation step runs **before** the DDNS and whitelist steps, so it takes priority over generic local-DNS rules for Apple domains.
+</Info>
+
+## GeoSite categories reference
+
+| Tag | Source list | Routing target |
+|---|---|---|
+| `geosite_cn` | `geosite_cn.txt` | Local DNS |
+| `geosite_no_cn` | `geosite_geolocation-!cn.txt` | Remote DNS |
+| `geosite_apple` | `geosite_apple.txt` | Apple fallback (optional) |
+| `stream_media` | `geosite_netflix.txt`, `geosite_disney.txt`, `geosite_hulu.txt`, `streaming.txt` | Streaming DNS (optional) |
+| `adlist` | `geosite_category-ads-all.txt` + custom sources | Rejected (RCODE 3) |

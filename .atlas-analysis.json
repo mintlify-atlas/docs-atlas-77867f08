@@ -1,0 +1,85 @@
+{
+  "projectType": "general",
+  "projectName": "luci-app-mosdns",
+  "projectDescription": "A LuCI web interface for MosDNS on OpenWrt, enabling intelligent DNS forwarding with support for DoH, DoT, DoQ, HTTP/3, geo-based routing, ad blocking, and custom rule management.",
+  "theme": "aspen",
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "building-from-source"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/basic-settings",
+              "configuration/dns-servers",
+              "configuration/advanced-options",
+              "configuration/custom-config"
+            ]
+          },
+          {
+            "group": "Rules & Filtering",
+            "pages": [
+              "rules/overview",
+              "rules/whitelist-blocklist",
+              "rules/hosts-redirect",
+              "rules/ad-blocking"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/dns-protocols",
+              "features/geo-routing",
+              "features/caching",
+              "features/geodata-update"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/logs",
+              "operations/api",
+              "operations/troubleshooting"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Support for multiple DNS protocols: UDP, TCP, DNS-over-TLS (DoT), DNS-over-HTTPS (DoH), DNS-over-QUIC (DoQ), and HTTP/3",
+    "Geo-based intelligent DNS routing using GeoSite and GeoIP databases (CN vs non-CN domains)",
+    "Built-in DNS caching with lazy cache and persistent cache dump support",
+    "Ad blocking with configurable source lists including GeoSite category-ads-all",
+    "Custom rule management: whitelist, blocklist, greylist, DDNS list, hosts, redirect, PTR blocking",
+    "Streaming media DNS routing (Netflix, Disney+, Hulu) via dedicated DNS servers",
+    "Apple domain optimization for Chinese mainland CDN resolution",
+    "DNS hijacking / redirect support via nftables for transparent DNS interception",
+    "EDNS client subnet (ECS) support for geolocation-aware remote DNS",
+    "Automatic GeoIP and GeoSite database updates via scheduled cron jobs",
+    "LuCI web interface with visual configuration, rule editor, and log viewer",
+    "Multi-architecture prebuilt package installation via one-line install script"
+  ],
+  "publicApiSurface": [
+    "UCI config: /etc/config/mosdns (enabled, listen_port, listen_address, log_level, cache, cache_size, lazy_cache_ttl, remote_dns, local_dns, bootstrap_dns, redirect, adblock, etc.)",
+    "Init script: /etc/init.d/mosdns (start, stop, restart, reload)",
+    "REST API: HTTP API at 0.0.0.0:9091 (flush cache, query stats)",
+    "mosdns.uc commands: interface_dns, get_adlist, update, update_adlist, v2dat_dump",
+    "Custom YAML config: /etc/mosdns/config_custom.yaml",
+    "Rule files: /etc/mosdns/rule/{whitelist,blocklist,greylist,ddnslist,hosts,redirect,local-ptr,streaming,cloudflare-cidr}.txt",
+    "Install script: install.sh (supports gh_proxy parameter)",
+    "LuCI views: basic.js (Basic Setting), rules.js (Rules), update.js (Geodata Update), logs.js (Logs)"
+  ]
+}

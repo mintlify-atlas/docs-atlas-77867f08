@@ -1,0 +1,130 @@
+---
+title: "Custom hosts, redirect, and PTR block rules"
+description: "Override DNS answers with custom hosts rewrites, redirect a domain's queries to another domain's records, and block reverse DNS lookups for private ranges."
+---
+
+Beyond the whitelist/blocklist routing rules, luci-app-mosdns provides four additional rule types for precise DNS answer manipulation: **Hosts** rewrites, **Redirect** rules, **Block PTR** entries, and **Streaming Media** domain overrides. You manage all of them in the LuCI **Rules** tab. Each file uses a simple text format — one rule per line.
+
+<Note>
+  Like all rule files, these only apply when **Config File** is set to **Default Config**.
+</Note>
+
+## Hosts
+
+**File:** `/etc/mosdns/rule/hosts.txt`
+
+The hosts file lets you map any domain directly to an IP address, bypassing all upstream DNS servers. MosDNS processes the `$hosts` plugin as the very first step in the pipeline — before the cache, before redirect rules, and before any forwarding. This makes hosts rewrites the highest-priority rule in the entire system.
+
+Each rule is a domain–IP pair on one line:
+
+```text
+# /etc/mosdns/rule/hosts.txt
+
+# Map a domain to an IPv4 address
+baidu.com 10.0.0.1
+
+# Map a domain to an IPv6 address
+example.com 2001:db8::1
+
+# Map a subdomain to an internal server
+git.corp.example.com 192.168.1.50
+```
+
+MosDNS returns the IP from the hosts file directly, without querying any upstream. The response TTL is inherited from the `modify_ttl` settings configured in Basic Options.
+
+<Tip>
+  Use the hosts file to point internal service names to LAN IP addresses — for example, routing `nas.local` to `192.168.1.100` so that all devices on your network resolve it correctly regardless of their own `/etc/hosts`.
+</Tip>
+
+## Redirect
+
+**File:** `/etc/mosdns/rule/redirect.txt`
+
+A redirect rule tells MosDNS: "when someone queries domain A, return the DNS records for domain B instead." The query is rewritten before being forwarded, so the upstream server sees a request for domain B and the client receives domain B's answers.
+
+Each rule is a source–target pair on one line:
+
+```text
+# /etc/mosdns/rule/redirect.txt
+
+# Return qq.com's A records when querying baidu.com
+baidu.com qq.com
+
+# Point an old hostname to a new canonical name
+old-api.example.com new-api.example.com
+```
+
+Redirect rules are processed after hosts lookups and after the cache check. If a cached entry exists for the queried domain, the cache result is returned directly without applying the redirect.
+
+<Warning>
+  Redirect rules rewrite the DNS query name, so the client receives records belonging to the target domain, not the queried domain. This is different from a CNAME — the returned records have the target domain's TTL and addresses. Use this carefully to avoid confusing application-level certificate validation.
+</Warning>
+
+## Block PTR
+
+**File:** `/etc/mosdns/rule/local-ptr.txt`
+
+PTR queries (reverse DNS, DNS type 12) look up the hostname for an IP address. For private and reserved IP ranges, these queries typically have no meaningful answer from public DNS servers but can still leak information or produce unnecessary upstream requests. The block PTR file lists reverse DNS zones where MosDNS should return `reject 3` instead of forwarding the query.
+
+The default `local-ptr.txt` ships with entries covering all RFC-defined private, loopback, shared, and link-local ranges:
+
+```text
+# /etc/mosdns/rule/local-ptr.txt (excerpt from defaults)
+
+# Loopback
+127.in-addr.arpa
+
+# RFC 1918 private ranges
+10.in-addr.arpa
+168.192.in-addr.arpa
+16.172.in-addr.arpa
+# ... through 31.172.in-addr.arpa
+
+# RFC 6598 shared address space (100.64.0.0/10)
+64.100.in-addr.arpa
+# ... through 127.100.in-addr.arpa
+
+# IPv6 reverse zone
+domain:ip6.arpa
+```
+
+You can add your own entries if you have additional private subnets whose PTR queries you want to suppress.
+
+<Note>
+  PTR block entries use the same domain matching syntax as other rule files. The default entries use plain suffix matching, so `10.in-addr.arpa` blocks all PTR queries for the entire `10.0.0.0/8` range.
+</Note>
+
+## Streaming media
+
+**File:** `/etc/mosdns/rule/streaming.txt`
+
+The streaming media rule file works together with the **Custom Stream Media DNS** setting. When that setting is enabled, any domain in this file is resolved using the dedicated **Streaming Media DNS server** instead of the local or remote upstream. This lets you route Netflix, Disney+, Hulu, and similar services through a DNS server that returns region-appropriate IP addresses.
+
+MosDNS automatically includes GeoSite entries for Disney, Netflix, and Hulu (`geosite_disney`, `geosite_netflix`, `geosite_hulu`) in the stream media domain set. The `streaming.txt` file extends that set with any extra domains you add:
+
+```text
+# /etc/mosdns/rule/streaming.txt
+
+# Add extra streaming domains beyond the built-in GeoSite entries
+paramountplus.com
+peacocktv.com
+full:api.hbomax.com
+```
+
+<Note>
+  If **Custom Stream Media DNS** is disabled, the streaming rule file is still loaded into memory but MosDNS skips the `$query_is_stream_media_domain` step entirely. Domains in `streaming.txt` fall through to normal geo-routing.
+</Note>
+
+## Pipeline position summary
+
+The table below shows where each rule type sits in the `main_sequence` pipeline:
+
+| Step | Plugin | Rule file |
+|------|--------|-----------|
+| 1 | `$hosts` | `hosts.txt` — highest priority, answers returned immediately |
+| 2 | cache lookup | — |
+| 3 | `$redirect` | `redirect.txt` — rewrites query name before forwarding |
+| 4–7 | whitelist / blocklist / greylist | — |
+| 8 | `$query_is_stream_media_domain` | `streaming.txt` — only active when stream DNS is enabled |
+| 9–11 | GeoSite + fallback | — |
+| PTR block | inside `$query_is_reject_domain` | `local-ptr.txt` — checked alongside blocklist |

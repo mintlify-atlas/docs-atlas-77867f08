@@ -1,0 +1,131 @@
+---
+title: "Install luci-app-mosdns on OpenWrt"
+description: "Install prebuilt luci-app-mosdns packages on your OpenWrt router using the one-line install script. Supports 30+ CPU architectures and opkg or apk."
+---
+
+luci-app-mosdns publishes prebuilt package archives for every supported CPU architecture. The install script detects your architecture and package manager automatically, downloads the correct archive from GitHub Releases, and installs all required packages in one step. You need SSH access to your router and at least 35 MB of free space on the root partition.
+
+## Prerequisites
+
+Before running the install script, you need `curl` available on your router. Install it with your package manager:
+
+<CodeGroup>
+
+```shell opkg (OpenWrt 21.02 – 24.10)
+opkg update
+opkg install curl
+```
+
+```shell apk (OpenWrt 25.12+)
+apk update
+apk add curl
+```
+
+</CodeGroup>
+
+<Info>
+  The install script requires OpenWrt 21.02 or later with LuCI installed. It checks for `/usr/share/luci/menu.d` at startup and exits if LuCI is not present.
+</Info>
+
+## Install
+
+<Steps>
+  <Step title="SSH into your router">
+    Open a terminal and connect to your OpenWrt device over SSH.
+
+    ```shell
+    ssh root@192.168.1.1
+    ```
+  </Step>
+
+  <Step title="Run the install script">
+    Execute the one-line install command. The script detects your architecture, downloads the correct package archive, and installs everything automatically.
+
+    ```shell
+    sh -c "$(curl -ksS https://raw.githubusercontent.com/sbwml/luci-app-mosdns/v5/install.sh)"
+    ```
+
+    If GitHub is slow or blocked from your router, use the GitHub proxy variant instead:
+
+    ```shell
+    sh -c "$(curl -ksS https://raw.githubusercontent.com/sbwml/luci-app-mosdns/v5/install.sh)" _ gh_proxy="https://gh.cooluc.com"
+    ```
+
+    The script prints progress in green and errors in red. A successful run ends with `Done!`.
+  </Step>
+
+  <Step title="Open the LuCI interface">
+    Navigate to **Services → MosDNS** in the LuCI web interface. Enable the service and configure your upstream DNS servers.
+  </Step>
+</Steps>
+
+## What gets installed
+
+The install script extracts and installs the following packages from the release archive:
+
+| Package | Purpose |
+|---|---|
+| `mosdns` | The MosDNS v5 DNS forwarder daemon |
+| `v2dat` | Tool for parsing v2ray geo data files |
+| `v2ray-geoip` | GeoIP database used for IP-based routing decisions |
+| `v2ray-geosite` | GeoSite database used for domain-based routing decisions |
+| `luci-app-mosdns` | The LuCI application (UI, init script, configuration) |
+| `luci-i18n-mosdns-zh-cn` | Simplified Chinese translation for the LuCI UI |
+
+After installation, the script starts the `mosdns` service automatically. Configuration files are stored at `/etc/config/mosdns` and `/etc/mosdns/`.
+
+## Minimum requirements
+
+- **Free space:** 35 MB on the root partition (`/`)
+- **OpenWrt version:** 21.02 or later
+- **LuCI:** must be installed (the script checks for `/usr/share/luci/menu.d`)
+- **Package manager:** `opkg` or `apk`
+
+<Warning>
+  The script exits with an error if free space on the root partition is below 35 MB. If your router has limited storage, consider using an extroot setup or building a custom firmware image with the package included.
+</Warning>
+
+## Supported architectures
+
+The install script supports the following CPU architectures. It reads your architecture from `/etc/openwrt_release` and exits if the value is not in this list.
+
+| ARM / AArch64 | x86 / x86-64 | MIPS / MIPS64 | Other |
+|---|---|---|---|
+| `aarch64_cortex-a53` | `i386_pentium-mmx` | `mips_24kc` | `loongarch64_generic` |
+| `aarch64_cortex-a72` | `i386_pentium4` | `mips_4kec` | `riscv64_riscv64` |
+| `aarch64_cortex-a76` | `x86_64` | `mips_mips32` | `riscv64_generic` |
+| `aarch64_generic` | | `mips64_mips64r2` | |
+| `arm_arm1176jzf-s_vfp` | | `mips64_octeonplus` | |
+| `arm_arm926ej-s` | | `mips64el_mips64r2` | |
+| `arm_cortex-a15_neon-vfpv4` | | `mipsel_24kc` | |
+| `arm_cortex-a5_vfpv4` | | `mipsel_24kc_24kf` | |
+| `arm_cortex-a7` | | `mipsel_74kc` | |
+| `arm_cortex-a7_neon-vfpv4` | | `mipsel_mips32` | |
+| `arm_cortex-a7_vfpv4` | | | |
+| `arm_cortex-a8_vfpv3` | | | |
+| `arm_cortex-a9` | | | |
+| `arm_cortex-a9_neon` | | | |
+| `arm_cortex-a9_vfpv3-d16` | | | |
+| `arm_fa526` | | | |
+| `arm_xscale` | | | |
+
+<Tip>
+  Not sure of your router's architecture? Run `cat /etc/openwrt_release` on your router and look at the `DISTRIB_ARCH` field. You can also check your device's page on the [OpenWrt Table of Hardware](https://openwrt.org/toh/start).
+</Tip>
+
+## How the script works
+
+The install script follows these steps each time you run it:
+
+1. Verifies it is running on an OpenWrt system by checking for `/etc/openwrt_release`.
+2. Reads your CPU architecture from `DISTRIB_ARCH` in that file.
+3. Detects whether `apk` or `opkg` is available and selects the matching SDK release tag (`openwrt-25.12` for apk, `openwrt-24.10` for opkg).
+4. Checks that LuCI is installed.
+5. Verifies at least 35 MB of free space is available on the root partition.
+6. Downloads `$DISTRIB_ARCH-$SDK.tar.gz` from the latest GitHub Release (optionally via a proxy).
+7. Stops the `mosdns` service if it is running.
+8. Extracts and installs each package in order: `v2dat`, `v2ray-geoip`, `v2ray-geosite`, `mosdns`, `luci-app-mosdns`, `luci-i18n-mosdns-zh-cn`.
+9. Clears LuCI cache files from `/tmp/luci-*`.
+10. Starts the `mosdns` service.
+
+Running the script again on an already-installed system performs a reinstall or downgrade using `--force-downgrade` (opkg) or `--allow-untrusted` (apk).

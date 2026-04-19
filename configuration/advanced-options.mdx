@@ -1,0 +1,119 @@
+---
+title: "Advanced configuration options for MosDNS on OpenWrt"
+description: "Tune concurrent queries, idle timeout, TLS validation, EDNS client subnet, DNS leak prevention, type 65 record blocking, and TTL management."
+---
+
+The Advanced Options section in LuCI exposes the knobs that control how MosDNS communicates with upstream servers, how it handles edge cases in DNS responses, and how it manages record time-to-live values. You typically do not need to change these from their defaults on a home router, but understanding them helps you troubleshoot latency, resolve TLS issues, or lock down DNS behavior for specific network scenarios.
+
+## Concurrent upstream queries
+
+<ParamField path="body.concurrent" type="number" default="2">
+  The number of upstream DNS servers queried simultaneously for a single client request. Setting this to `2` means MosDNS sends the query to up to 2 servers at the same time and uses whichever response arrives first. Higher values reduce tail latency at the cost of increased upstream traffic.
+</ParamField>
+
+The `concurrent` value applies to the `forward_local`, `forward_remote`, and `forward_stream_media` plugins. A value of `1` means serial — MosDNS queries the first upstream, and only tries the next if it times out or fails.
+
+## Connection multiplexing
+
+<ParamField path="body.idle_timeout" type="number" default="30">
+  Idle timeout in seconds for DoH, TCP, and DoT connection multiplexing. When a connection sits idle for longer than this value, MosDNS closes it. Setting to `0` disables connection reuse.
+</ParamField>
+
+<ParamField path="body.enable_pipeline" type="boolean" default="true">
+  Enables RFC 7766 TCP/DoT Query Pipelining. When on, multiple DNS queries share a single TCP or DoT connection, reducing connection setup overhead. Disable this if your upstream server does not support pipelining or if you observe dropped responses.
+</ParamField>
+
+Connection multiplexing (`enable_pipeline`) and idle timeout work together. With pipelining enabled, MosDNS keeps a pool of long-lived TCP/TLS connections to each upstream and reuses them across queries. The `idle_timeout` controls how long an inactive connection stays in the pool before being torn down.
+
+## TLS certificate validation
+
+<ParamField path="body.insecure_skip_verify" type="boolean" default="false">
+  When set to `true`, MosDNS skips TLS server certificate validation for all DoT and DoH upstreams. Useful when your router's system CA certificates have expired, the system time is wrong, or you are testing against a self-signed certificate.
+</ParamField>
+
+<Warning>
+Disabling TLS certificate validation removes the guarantee that you are actually talking to the DNS server you configured. Only enable this temporarily to diagnose a specific problem, and disable it once the root cause is fixed.
+</Warning>
+
+## EDNS client subnet (ECS)
+
+<ParamField path="body.enable_ecs_remote" type="boolean" default="false">
+  Attach an EDNS client subnet option to queries sent to the remote and streaming media DNS servers. When enabled, MosDNS inserts an `ecs <ip>` step into the `forward_remote_upstream` and `forward_stream_media_upstream` sequences.
+</ParamField>
+
+<ParamField path="body.remote_ecs_ip" type="string" default="110.34.181.1">
+  The IP address included in the ECS option. MosDNS sends the /24 subnet of this address (e.g., `110.34.181.0/24`) with every remote DNS query. Set this to the public IP you use when accessing foreign websites so that the upstream DNS server can return geographically appropriate IP addresses.
+</ParamField>
+
+ECS is most useful when you run your own recursive DNS server as the remote upstream and want CDN nodes to resolve your requests to the nearest point of presence. Most public DNS resolvers (Cloudflare, Google) accept but often anonymize ECS data.
+
+<Info>
+The ECS feature requires the upstream DNS server to support EDNS client subnet (RFC 7871). Using it with servers that do not support it has no effect — the option is silently ignored.
+</Info>
+
+## DNS leak prevention
+
+<ParamField path="body.dns_leak" type="boolean" default="false">
+  When enabled, the fallback plugin's primary resolver is switched from `query_is_non_local_ip` (which tries the local DNS first and falls back to remote if the response IP is not a Chinese IP) to `forward_remote_upstream` (which always uses remote DNS). This prevents the scenario where a non-Chinese domain is resolved by the local DNS server and leaks your query to a domestic resolver.
+</ParamField>
+
+The normal fallback behavior tries local DNS first and only uses remote DNS if the response contains a non-Chinese IP. With `dns_leak` enabled, that heuristic is skipped: all queries that are not definitively local-domain (via GeoSite) go straight to the remote DNS server.
+
+## HTTPS/SVCB record blocking (type 65)
+
+<ParamField path="body.reject_type65" type="boolean" default="true">
+  Block DNS RR type 65 (HTTPS/SVCB) records. These records are used by browsers and operating systems to discover HTTP/3 (QUIC) endpoints and Encrypted Client Hello (ECH) parameters. Rejecting them forces clients to fall back to A/AAAA records and standard TLS.
+</ParamField>
+
+<Note>
+Blocking type 65 is enabled by default because HTTP/3 traffic can bypass some traffic shaping or routing policies on OpenWrt routers. Disable this if you want your clients to benefit from HTTP/3 where available.
+</Note>
+
+## TTL management
+
+Both options default to `0`, which means MosDNS does not modify TTL values. Set them to non-zero values to enforce a floor and ceiling on how long clients cache DNS responses.
+
+<ParamField path="body.minimal_ttl" type="number" default="0">
+  Minimum TTL in seconds applied to all DNS responses. Any answer with a TTL lower than this value is raised to `minimal_ttl`. A value of `0` disables this modification. Useful to reduce re-query frequency for short-lived records.
+</ParamField>
+
+<ParamField path="body.maximum_ttl" type="number" default="0">
+  Maximum TTL in seconds applied to all DNS responses. Any answer with a TTL higher than this value is capped at `maximum_ttl`. A value of `0` disables this modification. Useful to ensure clients pick up DNS changes more quickly.
+</ParamField>
+
+DDNS entries listed in `/etc/mosdns/rule/ddnslist.txt` are exempt from the general TTL policy. They always get a forced TTL of 5 seconds via the `modify_ddns_ttl` sequence, regardless of what you set for `minimal_ttl` and `maximum_ttl`.
+
+## Apple domain optimization
+
+<ParamField path="body.apple_optimization" type="boolean" default="false">
+  Route Apple domain queries through a specialized fallback that first tries local DNS (to get a mainland CDN IP), then falls back to Xinfeng plain UDP (`114.114.114.114` / `114.114.115.115`) if the local result is not a Chinese IP. This keeps Apple services fast for users in mainland China by ensuring they resolve to the nearest Apple CDN node.
+</ParamField>
+
+When enabled, the `query_is_apple_domain` sequence is inserted before the standard DDNS and whitelist checks in the main sequence. Apple domains are matched against the `geosite_apple` set loaded from `/var/mosdns/geosite_apple.txt`.
+
+## Cloudflare IP matching
+
+<ParamField path="body.cloudflare" type="boolean" default="false">
+  Enable Cloudflare IP range matching. When a DNS response contains an IP that falls within the Cloudflare CIDR ranges (loaded from `/etc/mosdns/rule/cloudflare-cidr.txt`), MosDNS replaces that IP with the value of `cloudflare_ip`. This is an experimental feature.
+</ParamField>
+
+<ParamField path="body.cloudflare_ip" type="string" default="">
+  The replacement IP address used when a response matches the Cloudflare IP ranges. Typically set to a Cloudflare anycast IP that provides better routing from your location. Leave empty to disable the substitution even when `cloudflare` is on.
+</ParamField>
+
+The Cloudflare replacement is applied in the `has_resp_sequence` plugin and skips domains in the whitelist, greylist, and streaming media sets.
+
+## API listen port
+
+<ParamField path="body.listen_port_api" type="number" default="9091">
+  The port MosDNS exposes its HTTP API on. The API is used by LuCI to flush the DNS cache (via the **Flush DNS Cache** button on the Basic Settings page). The API binds to `0.0.0.0:<port>`.
+</ParamField>
+
+```shell
+# Manually flush the cache via the API
+curl -X POST http://127.0.0.1:9091/plugins/lazy_cache/flush
+```
+
+<Warning>
+Do not expose the API port to untrusted networks. Use firewall rules to restrict access to localhost or your LAN subnet.
+</Warning>

@@ -1,0 +1,96 @@
+---
+title: "DNS rule management in luci-app-mosdns"
+description: "Manage eight rule types — whitelist, blocklist, greylist, DDNS, hosts, redirect, PTR block, and streaming — to control how MosDNS resolves every domain."
+---
+
+Rule files let you override and fine-tune how MosDNS resolves domain names without writing any YAML. You edit them directly in the LuCI **Rules** tab, and MosDNS applies them automatically after saving. Rules only take effect when you use the **Default Config** profile; if you switch to **Custom Config**, MosDNS loads your own YAML and the rule files are ignored.
+
+<Note>
+  The **Rules** tab is only active when **Config File** is set to **Default Config** in the Basic Settings tab. Custom YAML configurations bypass all rule files.
+</Note>
+
+## Rule file locations
+
+All rule files live in `/etc/mosdns/rule/` on your router:
+
+| Rule type | File | Behavior |
+|-----------|------|----------|
+| White List | `whitelist.txt` | Matched domains always resolve via local DNS (highest priority) |
+| Block List | `blocklist.txt` | Matched domains receive a `reject 3` (NXDOMAIN) response |
+| Grey List | `greylist.txt` | Matched domains always resolve via remote DNS |
+| DDNS List | `ddnslist.txt` | Matched domains resolve via local DNS with a forced TTL of 5 s and no caching |
+| Hosts | `hosts.txt` | Custom A/AAAA rewrites, e.g. `baidu.com 10.0.0.1` |
+| Redirect | `redirect.txt` | Return records for domain B when querying domain A |
+| Block PTR | `local-ptr.txt` | PTR (reverse DNS) queries for listed reverse zones are rejected |
+| Streaming | `streaming.txt` | Matched domains use the Streaming Media DNS server (requires Custom Stream Media DNS) |
+
+## How rules are processed in the pipeline
+
+MosDNS evaluates every incoming query through the `main_sequence` pipeline in a fixed order. Understanding this order helps you predict which rule wins when a domain matches more than one list.
+
+```text
+main_sequence pipeline (Default Config)
+─────────────────────────────────────────────────────
+ 1. $hosts            — custom DNS rewrites (highest priority)
+ 2. cache lookup      — return cached response if available
+ 3. $redirect         — domain-to-domain redirects
+ 4. $query_is_ddns_domain     — DDNS list → local DNS, TTL forced to 5 s
+ 5. $query_is_whitelist_domain — whitelist → local DNS
+ 6. $query_is_reject_domain   — blocklist / adlist / PTR block → reject 3
+ 7. $query_is_greylist_domain — greylist → remote DNS
+ 8. $query_is_stream_media_domain — streaming list → stream DNS (if enabled)
+ 9. $query_is_local_domain    — GeoSite CN → local DNS
+10. $query_is_no_local_domain — GeoSite non-CN → remote DNS
+11. $fallback         — dual-query fallback for everything else
+─────────────────────────────────────────────────────
+```
+
+Because the pipeline stops at the first match that produces a response, earlier steps always win. A domain in `whitelist.txt` resolves locally even if it also appears in `greylist.txt` or `blocklist.txt`.
+
+## Domain matching syntax
+
+Every rule file uses one entry per line. Lines that begin with `#` are comments and are ignored. MosDNS supports several match patterns:
+
+```text
+# Exact match — only matches "example.com" itself
+full:example.com
+
+# Suffix match (default) — matches "example.com" and all subdomains
+example.com
+
+# Keyword match — matches any domain containing the string
+keyword:ads
+
+# Regex match — full regular expression
+regexp:^ads[0-9]+\.example\.com$
+```
+
+<Tip>
+  The plain `example.com` form performs a suffix match. It matches `example.com`, `www.example.com`, `sub.example.com`, and so on. Use `full:example.com` when you want only the apex domain.
+</Tip>
+
+## Editing rule files
+
+You can edit rule files in two ways:
+
+- **LuCI Rules tab** — navigate to **Services → MosDNS → Rules** and use the inline text editors for each rule type.
+- **SSH / SCP** — edit files directly at `/etc/mosdns/rule/*.txt`, then restart MosDNS with `/etc/init.d/mosdns restart`.
+
+Changes made in the LuCI editor are saved immediately and trigger a MosDNS restart automatically.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Whitelist, blocklist, and greylist" icon="list" href="/rules/whitelist-blocklist">
+    Control whether domains use local DNS, get blocked, or always go through remote DNS.
+  </Card>
+  <Card title="Hosts, redirect, and PTR block" icon="pencil" href="/rules/hosts-redirect">
+    Write custom DNS rewrites, redirect one domain's records to another, and suppress reverse DNS lookups.
+  </Card>
+  <Card title="Ad blocking" icon="ban" href="/rules/ad-blocking">
+    Enable DNS-level ad blocking using GeoSite lists or custom remote sources, with automatic updates.
+  </Card>
+  <Card title="Geo-based DNS routing" icon="earth-asia" href="/features/geo-routing">
+    Learn how GeoSite and GeoIP databases drive the automatic CN/non-CN routing logic.
+  </Card>
+</CardGroup>

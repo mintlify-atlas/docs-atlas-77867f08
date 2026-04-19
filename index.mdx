@@ -1,97 +1,78 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "luci-app-mosdns: Intelligent DNS for OpenWrt"
+description: "LuCI web interface for MosDNS v5 on OpenWrt. Route DNS by geo, block ads, and support DoH, DoT, DoQ, and HTTP/3 — all configured through a browser UI."
 ---
 
-## Setting up
+luci-app-mosdns brings [MosDNS v5](https://github.com/IrineSistiana/mosdns) to OpenWrt with a full LuCI web interface. It routes DNS queries intelligently — China-region domains go to local resolvers, international domains go to encrypted upstream servers — while supporting every modern DNS protocol and giving you fine-grained control over caching, filtering, and custom rules.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Install" icon="rocket" href="/installation">
+    Install prebuilt packages on your OpenWrt router with a single command. Supports 30+ CPU architectures.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Build from Source" icon="hammer" href="/building-from-source">
+    Compile luci-app-mosdns into your own OpenWrt firmware image using the standard buildroot.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Configuration Guide" icon="sliders" href="/configuration/basic-settings">
+    Configure DNS forwarding, listen ports, logging, caching, and redirect behavior through the LuCI UI.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="DNS Protocols" icon="network-wired" href="/features/dns-protocols">
+    Use UDP, TCP, DoT, DoH, DoQ, or HTTP/3 for upstream DNS. Mix protocols across local and remote servers.
   </Card>
-</Columns>
+  <Card title="Rules & Filtering" icon="filter" href="/rules/overview">
+    Manage whitelist, blocklist, greylist, hosts, redirect, and PTR-block rules through the built-in editor.
+  </Card>
+  <Card title="Ad Blocking" icon="ban" href="/rules/ad-blocking">
+    Block ads via GeoSite category lists or custom domain sources, updated automatically on a schedule.
+  </Card>
+</CardGroup>
 
-## Create beautiful pages
+## How it works
 
-Everything you need to create world-class documentation.
+luci-app-mosdns configures MosDNS as a plugin-based DNS forwarder running on your router. Incoming DNS queries pass through a sequenced pipeline of plugins that match domain names and IP addresses against geo databases, apply your custom rules, check the cache, and forward to the appropriate upstream server.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Install on your router">
+    SSH into your OpenWrt device and run the one-line install script to download and install all required packages for your CPU architecture.
+  </Step>
+  <Step title="Enable and configure in LuCI">
+    Navigate to **Services → MosDNS** in the LuCI web interface. Enable the service, set your listen port, and choose your upstream DNS servers.
+  </Step>
+  <Step title="Set up rules and filtering">
+    Use the **Rules** tab to add domains to whitelist, blocklist, greylist, or DDNS lists. Enable ad blocking and configure geo-routing behavior.
+  </Step>
+  <Step title="Update geo databases">
+    Visit the **Geodata Update** tab to configure automatic scheduled updates for GeoIP and GeoSite databases, keeping your routing rules current.
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Geo-based DNS routing" icon="earth-asia" href="/features/geo-routing">
+    Automatically route CN domains to local DNS and non-CN domains to encrypted remote servers using Loyalsoldier's GeoSite and GeoIP databases.
+  </Card>
+  <Card title="Lazy DNS cache" icon="database" href="/features/caching">
+    Cache DNS responses with configurable size, TTL overrides, and persistent cache dumps that survive reboots.
+  </Card>
+  <Card title="Streaming media routing" icon="play" href="/configuration/dns-servers">
+    Route Netflix, Disney+, and Hulu queries to a dedicated DNS server to ensure correct geo-unblocking behavior.
+  </Card>
+  <Card title="DNS hijacking" icon="shield" href="/configuration/basic-settings">
+    Transparently redirect all LAN DNS traffic to MosDNS using nftables, ensuring every device uses your configured resolvers.
+  </Card>
+</CardGroup>
+
+## Supported DNS protocols
+
+| Protocol | Example format |
+|----------|---------------|
+| UDP | `119.29.29.29` or `udp://119.29.29.29:53` |
+| TCP | `tcp://119.29.29.29` or `tcp://119.29.29.29:53` |
+| DNS-over-TLS | `tls://120.53.53.53` or `tls://120.53.53.53:853` |
+| DNS-over-HTTPS | `https://120.53.53.53/dns-query` |
+| DNS-over-HTTPS (HTTP/3) | `h3://dns.alidns.com/dns-query` |
+| DNS-over-QUIC | `quic://dns.alidns.com` or `doq://dns.alidns.com` |
+
+<Note>
+  luci-app-mosdns v5 requires OpenWrt 21.02 or later with LuCI installed. The prebuilt install script supports both `opkg` (21.02–24.10) and `apk` (25.12+) package managers.
+</Note>

@@ -1,0 +1,141 @@
+---
+title: "Whitelist, blocklist, and greylist rules"
+description: "Control per-domain DNS routing: whitelist forces local DNS, blocklist rejects queries, greylist forces remote DNS, and DDNS list bypasses the cache."
+---
+
+Four of the eight rule file types in luci-app-mosdns decide which DNS server handles a domain — or whether MosDNS answers at all. You manage them in the LuCI **Rules** tab under the **White Lists**, **Block Lists**, **Grey Lists**, and **DDNS Lists** sections. Each file uses one domain per line and supports the full MosDNS domain matching syntax.
+
+<Note>
+  These rule files only apply when **Config File** is set to **Default Config**. Switching to a custom YAML config bypasses all rule files.
+</Note>
+
+## White list
+
+**File:** `/etc/mosdns/rule/whitelist.txt`
+
+Domains in the white list always resolve through your **local (China) DNS** servers, regardless of what GeoSite or other rules say. This list has the highest priority in the pipeline — it is checked before blocklist, greylist, and GeoSite routing.
+
+Use the white list for domains that MosDNS would otherwise route to remote DNS, but that you know have correct local servers — for example, a self-hosted service behind a CDN that returns a domestic IP.
+
+```text
+# /etc/mosdns/rule/whitelist.txt
+
+# Apex + all subdomains (suffix match)
+example.cn
+
+# Exact match only
+full:api.example.com
+
+# Any domain containing this keyword
+keyword:localservice
+```
+
+## Block list
+
+**File:** `/etc/mosdns/rule/blocklist.txt`
+
+Domains in the block list receive a `reject 3` response (NXDOMAIN). MosDNS does not forward the query to any upstream server — it immediately returns a DNS error, effectively making the domain unresolvable.
+
+Use the block list for domains you want to silence at the DNS layer: trackers, unwanted CDN endpoints, or specific hostnames you do not want your LAN devices to reach.
+
+```text
+# /etc/mosdns/rule/blocklist.txt
+
+# Block a specific tracker domain and all its subdomains
+tracker.example.com
+
+# Block only the apex domain (no subdomains)
+full:adserver.example.net
+
+# Block any domain containing "telemetry"
+keyword:telemetry
+```
+
+<Warning>
+  The block list rejects queries with NXDOMAIN (`reject 3`). Some applications retry aggressively when they receive NXDOMAIN. If you need silent drops instead, consider a custom YAML config with `reject 5` (REFUSED).
+</Warning>
+
+## Grey list
+
+**File:** `/etc/mosdns/rule/greylist.txt`
+
+Domains in the grey list always resolve through your **remote DNS** servers, bypassing local DNS entirely. This takes effect after the white list and block list checks, so a domain in both the white list and grey list will use local DNS (white list wins).
+
+Use the grey list for domains that GeoSite incorrectly classifies as Chinese — for example, a global service that happens to have a Chinese GeoSite entry but whose IP addresses you want resolved by your encrypted remote resolver.
+
+```text
+# /etc/mosdns/rule/greylist.txt
+
+# Always resolve via remote DNS
+example.com
+
+# Exact match for a specific subdomain only
+full:cdn.example.com
+```
+
+## DDNS list
+
+**File:** `/etc/mosdns/rule/ddnslist.txt`
+
+Domains in the DDNS list resolve through **local DNS** just like the white list, but with two extra constraints: the TTL of every answer is forced to **5 seconds**, and results are **never written to the cache**. This ensures that rapidly changing IP addresses (typical of DDNS hostnames) are always freshly resolved rather than served from a stale cache entry.
+
+Use the DDNS list for your own dynamic DNS hostnames or any domain whose IP address changes frequently.
+
+```text
+# /etc/mosdns/rule/ddnslist.txt
+
+# A home DDNS hostname — always re-resolved, TTL pinned to 5 s
+myhome.duckdns.org
+
+# A self-hosted service with a dynamic IP
+full:router.example.com
+```
+
+<Tip>
+  The DDNS list is processed before the white list in the pipeline. If a domain appears in both, it uses DDNS behavior (local DNS, 5 s TTL, no cache).
+</Tip>
+
+## Processing order
+
+When a query arrives, MosDNS checks these four lists in this order and stops as soon as it finds a match:
+
+<Steps>
+  <Step title="DDNS list">
+    Query matches `ddnslist.txt` → resolve via local DNS, force TTL to 5 s, skip cache.
+  </Step>
+  <Step title="White list">
+    Query matches `whitelist.txt` → resolve via local DNS with normal TTL behavior.
+  </Step>
+  <Step title="Block list">
+    Query matches `blocklist.txt` → return `reject 3` (NXDOMAIN) immediately.
+  </Step>
+  <Step title="Grey list">
+    Query matches `greylist.txt` → resolve via remote DNS.
+  </Step>
+</Steps>
+
+If a domain does not match any of these lists, MosDNS continues to the GeoSite CN/non-CN routing stage and the fallback logic.
+
+## Domain matching syntax
+
+All four files use the same syntax. Each line is one rule:
+
+```text
+# Comment line — ignored
+
+# Suffix match (default): matches "example.com" and all subdomains
+example.com
+
+# Exact match: matches only "example.com" itself
+full:example.com
+
+# Keyword match: matches any domain name containing this string
+keyword:ads-
+
+# Regex match: full regular expression
+regexp:^[a-z0-9]+\.ads\.example\.com$
+```
+
+<Note>
+  Blank lines and lines starting with `#` are ignored. There is no limit on the number of entries per file.
+</Note>

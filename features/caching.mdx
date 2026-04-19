@@ -1,0 +1,158 @@
+---
+title: "DNS caching with lazy cache in MosDNS"
+description: "Configure MosDNS lazy cache size, TTL override, persistent cache dump to disk, and auto-save interval to reduce upstream queries and survive reboots."
+---
+
+luci-app-mosdns includes a built-in DNS cache powered by MosDNS's `cache` plugin in lazy-cache mode. Lazy cache extends the lifetime of cached entries beyond their original TTL: when a stale entry is requested, MosDNS returns the cached answer immediately (low latency) and refreshes it in the background. You can also persist the cache to disk so it survives router reboots.
+
+## How the cache fits in the pipeline
+
+The cache step runs early in the `main_sequence` pipeline, right after hosts lookup and before any upstream DNS query. Certain domain categories are explicitly excluded from caching to ensure they always return fresh data:
+
+| Excluded category | Reason |
+|---|---|
+| `ddnslist` | DDNS domains change frequently; TTL is forced to 5 s |
+| `blocklist` | Blocked domains must remain blocked without a cached response |
+| `adlist` | Ad domains must remain blocked without a cached response |
+| `local_ptr` | PTR queries for local addresses must not be cached |
+
+All other domains pass through the cache check. A cache hit short-circuits the rest of the pipeline and returns the stored answer immediately.
+
+```yaml
+# main_sequence cache step (generated config)
+- matches:
+    - "!qname $ddnslist"
+    - "!qname $blocklist"
+    - "!qname $adlist"
+    - "!qname $local_ptr"
+  exec: $lazy_cache
+- exec: jump has_resp_sequence
+```
+
+## Cache settings
+
+### Enable DNS cache (`cache`)
+
+Toggles the cache on or off. When disabled, every query hits an upstream resolver.
+
+```text
+Default: enabled (1)
+```
+
+### Cache size (`cache_size`)
+
+Sets the maximum number of DNS records the cache holds. When the cache is full, the least-recently-used entries are evicted.
+
+```text
+Default: 8000 entries
+```
+
+<Tip>
+The `config_custom.yaml` template uses 20 000 entries as an example for custom configurations. On routers with ample RAM (256 MB+), increasing this reduces upstream queries significantly.
+</Tip>
+
+### Lazy cache TTL (`lazy_cache_ttl`)
+
+Controls how long, in seconds, an entry remains in the cache after its original DNS TTL has expired. During this survival window:
+
+1. The stale cached response is returned immediately to the client.
+2. MosDNS triggers a background refresh query to update the entry.
+
+Set to `0` to disable lazy caching entirely; entries are evicted as soon as their original TTL expires.
+
+```text
+Default: 86400 seconds (24 hours)
+```
+
+<Info>
+Lazy cache significantly reduces latency for frequently queried domains. The client never waits for a network round-trip to a resolver because stale answers are served instantly while the refresh happens asynchronously.
+</Info>
+
+### Minimum TTL (`minimal_ttl`)
+
+Overrides DNS response TTL values that fall below this threshold. Set to `0` to leave TTL values unchanged.
+
+```text
+Default: 0 (no modification)
+```
+
+### Maximum TTL (`maximum_ttl`)
+
+Caps DNS response TTL values that exceed this threshold. Set to `0` to leave TTL values unchanged.
+
+```text
+Default: 0 (no modification)
+```
+
+<Note>
+`minimal_ttl` and `maximum_ttl` modify the TTL in the response sent to the client. They do not affect the `lazy_cache_ttl` survival window.
+</Note>
+
+## DDNS domain TTL override
+
+Domains in the DDNS list receive special treatment regardless of the cache settings above. They are:
+
+- **Always resolved via local DNS** — no cache lookup.
+- **Always returned with a TTL of exactly 5 seconds** — enforced by the `modify_ddns_ttl` sequence.
+- **Never written to the cache.**
+
+```yaml
+# modify_ddns_ttl sequence
+- tag: modify_ddns_ttl
+  type: sequence
+  args:
+    - exec: ttl 5-5
+```
+
+This ensures that dynamic IP updates for your DDNS hostnames are visible within 5 seconds across all clients on the network.
+
+## Persistent cache dump
+
+The cache normally lives in RAM (`/var/mosdns/`) and is lost on reboot. Enabling **Cache Dump** writes the cache to disk so it is available immediately after the next startup.
+
+### Cache dump settings
+
+| Setting | Key | Description | Default |
+|---|---|---|---|
+| Cache Dump | `dump_file` | Enable persistence to `/etc/mosdns/cache.dump` | Disabled |
+| Auto Save Cache Interval | `dump_interval` | How often (seconds) to write the cache to disk | 3600 s |
+
+### File locations
+
+```text
+RAM cache:   /var/mosdns/        (lost on reboot)
+Disk cache:  /etc/mosdns/cache.dump  (persists across reboots)
+```
+
+On startup, MosDNS loads `cache.dump` if it exists, so clients benefit from cached entries immediately without waiting for the cache to warm up from upstream queries.
+
+<Warning>
+Writing the cache to disk repeatedly causes flash wear on routers with NAND or NOR flash storage. Consider setting `dump_interval` to a large value (e.g., 3600 seconds or more) or leaving **Cache Dump** disabled if your router's flash lifespan is a concern.
+</Warning>
+
+## Cache plugin YAML reference
+
+The following is the full `cache` plugin block as it appears in `config_custom.yaml`:
+
+```yaml
+- tag: lazy_cache
+  type: cache
+  args:
+    size: 20000
+    lazy_cache_ttl: 86400
+    dump_file: "/etc/mosdns/cache.dump"
+    dump_interval: 600
+```
+
+The generated default configuration (from LuCI settings) uses the values you set in the UI:
+
+```yaml
+- tag: lazy_cache
+  type: cache
+  args:
+    size: 8000          # cache_size
+    lazy_cache_ttl: 86400   # lazy_cache_ttl
+    # dump_file and dump_interval only present when Cache Dump is enabled
+    dump_file: "/etc/mosdns/cache.dump"
+    dump_interval: 3600     # dump_interval
+```
